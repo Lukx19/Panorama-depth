@@ -120,8 +120,8 @@ class GradLoss(nn.Module):
 	def __init__(self):
 
 		super(GradLoss, self).__init__()
-		self.get_gradient = Sobel().cuda()
-		self.l2_loss = L2Loss().cuda()
+		self.get_gradient = Sobel()
+		self.l2_loss = L2Loss()
 		self.cos = nn.CosineSimilarity(dim=1, eps=0)
 
 	def createValidMean(self,mask,valid_pixels):
