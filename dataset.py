@@ -82,10 +82,11 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
         relative_basename = osp.splitext((relative_paths[0]))[0]
         basename = osp.splitext(osp.basename(relative_paths[0]))[0]
+        print(basename)
 
         # read RGB convert to PIL and apply transformation
-        rgb = Image.open(osp.join(self.root_path, relative_paths[0]))
-        rgb = self.transformer_rgb(rgb)
+        original_rgb = Image.open(osp.join(self.root_path, relative_paths[0]))
+        rgb = self.transformer_rgb(original_rgb)
 
         # read EXR convert to numpy and convert to PIL. Then apply transformation.
         depth = self.readDepthPano(osp.join(self.root_path, relative_paths[1]))
@@ -111,6 +112,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
         return {
             "image": rgb,
+            # "paths": relative_paths,
             "gt": depth,
             "mask": depth_mask,
             "name": basename,

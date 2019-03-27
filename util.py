@@ -9,6 +9,7 @@ import array
 import os
 import os.path as osp
 import shutil
+from PIL import Image
 
 
 def mkdirs(path):
@@ -70,3 +71,21 @@ def set_caffe_param_mult(m, base_lr, base_weight_decay):
             param_list.append({'params': params, 'lr': base_lr,
                                'weight_decay': base_weight_decay})
     return param_list
+
+
+def read_exr(image_fpath):
+    f = OpenEXR.InputFile(image_fpath)
+    dw = f.header()['dataWindow']
+    w, h = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
+    # Read in the EXR
+    n_channels = len(f.header()["channels"])
+    im = np.empty((h, w, n_channels))
+    FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
+    if n_channels == 3:
+        channels = f.channels(["R", "G", "B"], FLOAT)
+    else:
+        channels = f.channels(["Y"], FLOAT)
+
+    for i, channel in enumerate(channels):
+        im[:, :, i] = np.reshape(array.array('f', channel), (h, w))
+    return im

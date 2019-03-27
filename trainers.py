@@ -13,6 +13,7 @@ from metrics import *
 # From https://github.com/fyu/drn
 class AverageMeter(object):
     """Computes and stores the average and current value"""
+
     def __init__(self):
         self.reset()
 
@@ -29,10 +30,10 @@ class AverageMeter(object):
         self.avg = self.sum / self.count
 
     def to_dict(self):
-        return {'val' : self.val,
-            'sum' : self.sum,
-            'count' : self.count,
-            'avg' : self.avg}
+        return {'val': self.val,
+                'sum': self.sum,
+                'count': self.count,
+                'avg': self.avg}
 
     def from_dict(self, meter_dict):
         self.val = meter_dict['val']
@@ -41,10 +42,10 @@ class AverageMeter(object):
         self.avg = meter_dict['avg']
 
 
-
 def visualize_rgb(rgb):
     # Scale back to [0,255]
     return (255 * rgb).byte()
+
 
 def visualize_mask(mask):
     '''Visualize the data mask'''
@@ -52,27 +53,70 @@ def visualize_mask(mask):
     return (255 * mask).byte()
 
 
+def parse_data(data):
+    '''
+    Returns a list of the inputs as first output, a list of the GT as a second output, and alist of the remaining info as a third output. Must be implemented.
+    '''
+    # print(data)
+
+    rgb = data["image"]
+    gt_depth_1x = data["gt"]
+    gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
+    gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
+    mask_1x = data["mask"]
+    mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
+    mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
+
+    inputs = [rgb]
+    gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
+    return inputs, gt
+
+
+def parse_data_sparse_depth(data):
+    '''
+    Returns a list of the inputs as first output, a list of the GT as a second output, and a list of the remaining info as a third output. Must be implemented.
+    '''
+    # print(data)
+    rgb = data["image"]
+    gt_depth_1x = data["gt"]
+    gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
+    gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
+
+    sparse_depth = data["sparse_depth"]
+
+    mask_1x = data["mask"]
+    mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
+    mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
+
+    inputs = [torch.cat((rgb, sparse_depth), 1), sparse_depth]
+    gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
+
+    return inputs, gt
+
+
 class MonoTrainer(object):
 
     def __init__(
-         self,
-         name,
-         network,
-         train_dataloader,
-         val_dataloader,
-         criterion,
-         optimizer,
-         checkpoint_dir,
-         device,
-         visdom=None,
-         scheduler=None,
-         num_epochs=20,
-         validation_freq=1,
-         visualization_freq=5,
-         validation_sample_freq=-1):
+            self,
+            name,
+            network,
+            train_dataloader,
+            val_dataloader,
+            criterion,
+            optimizer,
+            checkpoint_dir,
+            device,
+            parse_fce=parse_data,
+            visdom=None,
+            scheduler=None,
+            num_epochs=20,
+            validation_freq=1,
+            visualization_freq=5,
+            validation_sample_freq=-1):
 
         # Name of this experiment
         self.name = name
+        self.parse_data = parse_fce
 
         # Class instances
         self.network = network
@@ -121,7 +165,6 @@ class MonoTrainer(object):
         # Loss trackers
         self.loss_meter = AverageMeter()
 
-
     def forward_pass(self, inputs):
         '''
         Accepts the inputs to the network as a Python list
@@ -152,6 +195,8 @@ class MonoTrainer(object):
 
             # Parse the data into inputs, ground truth, and other
             inputs, gt = self.parse_data(data)
+            inputs = [tensor.to(self.device) for tensor in inputs]
+            gt = [tensor.to(self.device) for tensor in gt]
 
             # Run a forward pass
             forward_time = time.time()
@@ -182,8 +227,6 @@ class MonoTrainer(object):
                 self.print_batch_report(batch_num)
                 self.loss_meter.reset()
 
-
-
     def validate(self):
         print('Validating model....')
 
@@ -200,6 +243,8 @@ class MonoTrainer(object):
 
                 # Parse the data
                 inputs, gt = self.parse_data(data)
+                inputs = [tensor.to(self.device) for tensor in inputs]
+                gt = [tensor.to(self.device) for tensor in gt]
 
                 # Run a forward pass
                 output = self.forward_pass(inputs)
@@ -216,7 +261,6 @@ class MonoTrainer(object):
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
         self.print_validation_report()
-
 
     def train(self, checkpoint_path=None, weights_only=False):
         print('Starting training')
@@ -245,13 +289,12 @@ class MonoTrainer(object):
                 self.save_checkpoint()
                 self.visualize_metrics()
 
-
-
-    def evaluate(self, checkpoint_path):
+    def evaluate(self, checkpoint_path, only_predict=False):
         print('Evaluating model....')
 
         # Load the checkpoint to evaluate
-        self.load_checkpoint(checkpoint_path, True, True)
+        self.load_checkpoint(
+            checkpoint_path, weights_only=True, eval_mode=True)
 
         # Put the model in eval mode
         self.network = self.network.eval()
@@ -261,47 +304,39 @@ class MonoTrainer(object):
 
         # Load data
         s = time.time()
+        results = []
         with torch.no_grad():
             for batch_num, data in enumerate(self.val_dataloader):
 
                 # Parse the data
                 inputs, gt = self.parse_data(data)
+                inputs = [tensor.to(self.device) for tensor in inputs]
+                gt = [tensor.to(self.device) for tensor in gt]
 
                 # Run a forward pass
-                output = self.forward_pass(inputs)
+                outputs = self.forward_pass(inputs)
 
                 # Compute the evaluation metrics
-                self.compute_eval_metrics(output, gt)
+                self.compute_eval_metrics(outputs, gt)
+
+                if only_predict:
+                    result = {
+                        "output": outputs[0],
+                        "data": data
+                    }
+                    results.append(result)
+                    continue
 
                 # If trying to save intermediate outputs
                 if self.validation_sample_freq >= 0:
                     # Save the intermediate outputs
                     if i % self.validation_sample_freq == 0:
-                        self.save_samples(data, output)
+                        self.save_samples(data, outputs)
 
         # Print a report on the validation results
         print('Evaluation finished in {} seconds'.format(time.time() - s))
-        self.print_validation_report()
-
-
-
-    def parse_data(self, data):
-        '''
-        Returns a list of the inputs as first output, a list of the GT as a second output, and a list of the remaining info as a third output. Must be implemented.
-        '''
-        # print(data)
-        rgb = data["image"].to(self.device)
-        gt_depth_1x = data["gt"].to(self.device)
-        gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
-        gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
-        mask_1x = data["mask"].to(self.device)
-        mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
-        mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
-
-        inputs = [rgb]
-        gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
-
-        return inputs, gt
+        report = self.print_validation_report()
+        return report, results
 
     def reset_eval_metrics(self):
         '''
@@ -316,7 +351,6 @@ class MonoTrainer(object):
         self.d3_inlier_meter.reset()
         self.is_best = False
 
-
     def compute_eval_metrics(self, output, gt):
         '''
         Computes metrics used to evaluate the model
@@ -328,7 +362,8 @@ class MonoTrainer(object):
         N = depth_mask.sum()
 
         # Align the prediction scales via median
-        median_scaling_factor = gt_depth[depth_mask>0].median() / depth_pred[depth_mask>0].median()
+        median_scaling_factor = gt_depth[depth_mask > 0].median(
+        ) / depth_pred[depth_mask > 0].median()
         depth_pred *= median_scaling_factor
 
         abs_rel = abs_rel_error(depth_pred, gt_depth, depth_mask)
@@ -346,7 +381,6 @@ class MonoTrainer(object):
         self.d1_inlier_meter.update(d1, N)
         self.d2_inlier_meter.update(d2, N)
         self.d3_inlier_meter.update(d3, N)
-
 
     def load_checkpoint(self, checkpoint_path=None, weights_only=False, eval_mode=False):
         '''
@@ -388,8 +422,8 @@ class MonoTrainer(object):
 
         self.vis[0].line(
             env=self.vis[1],
-            X=torch.zeros(1,1).long(),
-            Y=torch.zeros(1,1).float(),
+            X=torch.zeros(1, 1).long(),
+            Y=torch.zeros(1, 1).float(),
             win='losses',
             opts=dict(
                 title='Loss Plot',
@@ -400,8 +434,8 @@ class MonoTrainer(object):
 
         self.vis[0].line(
             env=self.vis[1],
-            X=torch.zeros(1,4).long(),
-            Y=torch.zeros(1,4).float(),
+            X=torch.zeros(1, 4).long(),
+            Y=torch.zeros(1, 4).float(),
             win='error_metrics',
             opts=dict(
                 title='Depth Error Metrics',
@@ -412,8 +446,8 @@ class MonoTrainer(object):
 
         self.vis[0].line(
             env=self.vis[1],
-            X=torch.zeros(1,3).long(),
-            Y=torch.zeros(1,3).float(),
+            X=torch.zeros(1, 3).long(),
+            Y=torch.zeros(1, 3).float(),
             win='inlier_metrics',
             opts=dict(
                 title='Depth Inlier Metrics',
@@ -421,7 +455,6 @@ class MonoTrainer(object):
                 xlabel='Epoch',
                 ylabel='Percent',
                 legend=['d1', 'd2', 'd3']))
-
 
     def visualize_loss(self, batch_num, loss):
         '''
@@ -437,12 +470,11 @@ class MonoTrainer(object):
             opts=dict(
                 legend=['Total Loss']))
 
-
     def visualize_samples(self, inputs, gt, other, output):
         '''
         Updates the output samples visualization
         '''
-        rgb = inputs[0][0].cpu()
+        rgb = inputs[0][0][0:3].cpu()
         depth_pred = output[0][0].cpu()
         gt_depth = gt[0][0].cpu()
         depth_mask = gt[1][0].cpu()
@@ -463,10 +495,9 @@ class MonoTrainer(object):
                 title='Mask',
                 caption='Mask'))
 
-
         max_depth = max(
-            ((depth_mask>0).float()*gt_depth).max().item(),
-            ((depth_mask>0).float()*depth_pred).max().item())
+            ((depth_mask > 0).float()*gt_depth).max().item(),
+            ((depth_mask > 0).float()*depth_pred).max().item())
         self.vis[0].heatmap(
             depth_pred.squeeze().flip(0),
             env=self.vis[1],
@@ -485,7 +516,6 @@ class MonoTrainer(object):
                 title='Depth GT',
                 caption='Depth GT',
                 xmax=max_depth))
-
 
     def visualize_metrics(self):
         '''
@@ -511,7 +541,6 @@ class MonoTrainer(object):
             opts=dict(
                 legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error', 'Log RMS Error']))
 
-
         inliers = torch.FloatTensor([d1, d2, d3])
         inliers = inliers.view(1, -1)
         epoch_expanded = torch.ones(inliers.shape) * (self.epoch+1)
@@ -529,43 +558,45 @@ class MonoTrainer(object):
         Prints a report of the current batch
         '''
         print('Epoch: [{0}][{1}/{2}]\t'
-            'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\n'
-            'Forward Time {forward_time.val:.3f} ({forward_time.avg:.3f})\t'
-            'Backward Time {backward_time.val:.3f} ({backward_time.avg:.3f})\n'
-            'Loss {loss.val:.4f} ({loss.avg:.4f})\n\n'.format(
-            self.epoch+1,
-            batch_num+1,
-            len(self.train_dataloader),
-            batch_time=self.batch_time_meter,
-            forward_time=self.forward_time_meter,
-            backward_time=self.backward_time_meter,
-            loss=self.loss_meter))
+              'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\n'
+              'Forward Time {forward_time.val:.3f} ({forward_time.avg:.3f})\t'
+              'Backward Time {backward_time.val:.3f} ({backward_time.avg:.3f})\n'
+              'Loss {loss.val:.4f} ({loss.avg:.4f})\n\n'.format(
+                  self.epoch+1,
+                  batch_num+1,
+                  len(self.train_dataloader),
+                  batch_time=self.batch_time_meter,
+                  forward_time=self.forward_time_meter,
+                  backward_time=self.backward_time_meter,
+                  loss=self.loss_meter))
 
     def print_validation_report(self):
         '''
         Prints a report of the validation results
         '''
-        print('Epoch: {}\n'
-            '  Avg. Abs. Rel. Error: {:.4f}\n'
-            '  Avg. Sq. Rel. Error: {:.4f}\n'
-            '  Avg. Lin. RMS Error: {:.4f}\n'
-            '  Avg. Log RMS Error: {:.4f}\n'
-            '  Inlier D1: {:.4f}\n'
-            '  Inlier D2: {:.4f}\n'
-            '  Inlier D3: {:.4f}\n\n'.format(
-            self.epoch+1,
-            self.abs_rel_error_meter.avg,
-            self.sq_rel_error_meter.avg,
-            math.sqrt(self.lin_rms_sq_error_meter.avg),
-            math.sqrt(self.log_rms_sq_error_meter.avg),
-            self.d1_inlier_meter.avg,
-            self.d2_inlier_meter.avg,
-            self.d3_inlier_meter.avg))
+        report = ('Epoch: {}\n'
+                  '  Avg. Abs. Rel. Error: {:.4f}\n'
+                  '  Avg. Sq. Rel. Error: {:.4f}\n'
+                  '  Avg. Lin. RMS Error: {:.4f}\n'
+                  '  Avg. Log RMS Error: {:.4f}\n'
+                  '  Inlier D1: {:.4f}\n'
+                  '  Inlier D2: {:.4f}\n'
+                  '  Inlier D3: {:.4f}\n\n'.format(
+                      self.epoch+1,
+                      self.abs_rel_error_meter.avg,
+                      self.sq_rel_error_meter.avg,
+                      math.sqrt(self.lin_rms_sq_error_meter.avg),
+                      math.sqrt(self.log_rms_sq_error_meter.avg),
+                      self.d1_inlier_meter.avg,
+                      self.d2_inlier_meter.avg,
+                      self.d3_inlier_meter.avg))
 
+        print(report)
         # Also update the best state tracker
         if self.best_d1_inlier < self.d1_inlier_meter.avg:
             self.best_d1_inlier = self.d1_inlier_meter.avg
             self.is_best = True
+        return report
 
     def save_checkpoint(self):
         '''
@@ -584,7 +615,7 @@ class MonoTrainer(object):
                 'state_dict': self.network.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
                 'loss_meter': self.loss_meter.to_dict(),
-                'best_d1_inlier' : self.best_d1_inlier
+                'best_d1_inlier': self.best_d1_inlier
             },
             self.is_best,
             filename=checkpoint_path)
@@ -596,36 +627,8 @@ class MonoTrainer(object):
         shutil.copyfile(checkpoint_path, history_path)
         print('Checkpoint saved')
 
-
     def save_samples(self, data, outputs):
         '''
         Saves samples of the network inputs and outputs
         '''
         pass
-
-
-class SparseDepthTrainer(MonoTrainer):
-    def __init__(self, *args, **kwargs):
-        super(SparseDepthTrainer, self).__init__(*args, **kwargs)
-
-    def parse_data(self, data):
-        '''
-        Returns a list of the inputs as first output, a list of the GT as a second output, and a list of the remaining info as a third output. Must be implemented.
-        '''
-        # print(data)
-        rgb = data["image"].to(self.device)
-        gt_depth_1x = data["gt"].to(self.device)
-        gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
-        gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
-
-        sparse_depth = data["sparse_depth"].to(self.device)
-
-        mask_1x = data["mask"].to(self.device)
-        mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
-        mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
-
-        inputs = [torch.cat((rgb, sparse_depth),1)]
-        gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
-
-        return inputs, gt
-

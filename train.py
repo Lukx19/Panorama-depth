@@ -3,7 +3,7 @@ import torch.nn as nn
 
 import visdom
 
-from trainers import MonoTrainer, SparseDepthTrainer
+from trainers import MonoTrainer, parse_data, parse_data_sparse_depth
 from network import *
 from criteria import *
 from dataset import *
@@ -29,6 +29,9 @@ parser.add_argument('--loss_type', default="Revis", type=str,
 
 parser.add_argument('--add_points', action="store_true", default=False,
                     help='In addition to monocular image also add sparse points to training.')
+
+parser.add_argument('--cspn', action="store_true", default=False,
+                    help='Activates recursive refinement CSPN layer.')
 
 parser.add_argument('--dataset_dir', type=str, default="../datasets/",
                     help='Dataset storage folder')
@@ -80,11 +83,10 @@ env = args.experiment_name
 device = torch.device('cuda', device_ids[0])
 
 in_channels = 3
-Trainer = MonoTrainer
+parser = parse_data
 if args.add_points:
     in_channels = 4
-    Trainer = SparseDepthTrainer
-
+    parser = parse_data_sparse_depth
 
 # UResNet
 if args.network_type == 'UResNet':
@@ -93,7 +95,7 @@ if args.network_type == 'UResNet':
     beta_list = [0.15, 0., 0.]
 # RectNet
 elif args.network_type == 'RectNet':
-    model = RectNet(in_channels)
+    model = RectNet(in_channels, cspn=args.cspn)
     alpha_list = [0.535, 0.272]
     beta_list = [0.134, 0.068, ]
 else:
@@ -148,7 +150,8 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
                                             step_size=args.decay_step_size,
                                             gamma=args.decay_lr)
 
-trainer = Trainer(
+
+trainer = MonoTrainer(
     args.experiment_name,
     network,
     train_dataloader,
@@ -157,6 +160,7 @@ trainer = Trainer(
     optimizer,
     checkpoint_dir,
     device,
+    parse_fce=parser,
     visdom=[vis, env],
     scheduler=scheduler,
     num_epochs=args.epochs,
