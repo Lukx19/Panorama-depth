@@ -22,7 +22,7 @@ parser.add_argument('experiment_name', type=str,
                     help='Name of this experiment. Used to creat folder in checkpoint folder.')
 
 parser.add_argument('--network_type', default="RectNet", type=str,
-                    help='UResNet or RectNet')
+                    help='UResNet or RectNet or RectNet2')
 
 parser.add_argument('--loss_type', default="Revis", type=str,
                     help='MultiScale or Revis')
@@ -96,6 +96,10 @@ if args.network_type == 'UResNet':
 # RectNet
 elif args.network_type == 'RectNet':
     model = RectNet(in_channels, cspn=args.cspn)
+    alpha_list = [0.535, 0.272]
+    beta_list = [0.134, 0.068, ]
+elif args.network_type == 'RectNet2':
+    model = RectNet2(in_channels, cspn=args.cspn)
     alpha_list = [0.535, 0.272]
     beta_list = [0.134, 0.068, ]
 else:

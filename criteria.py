@@ -132,9 +132,9 @@ class GradLoss(nn.Module):
             pred = pred_list[i]
             gt = gt_list[i]
             mask = mask_list[i]
+            b, _, w, h = pred.size()
             if i == 0:
-                ones = torch.ones(pred.size(0), 1, pred.size(
-                    2), pred.size(3)).float().cuda()
+                ones = torch.ones(b, 1, w, h).float().cuda()
                 depth_grad = self.get_gradient(gt)
                 output_grad = self.get_gradient(pred)
 
@@ -142,13 +142,13 @@ class GradLoss(nn.Module):
                 depth_grad_dx = depth_grad_dx.contiguous().view_as(pred)
 
                 depth_grad_dy = depth_grad[:, 1, :, :]
-                depth_grad_dx = depth_grad_dx.contiguous().view_as(pred)
+                depth_grad_dy = depth_grad_dy.contiguous().view_as(pred)
 
                 output_grad_dx = output_grad[:, 0, :, :]
-                depth_grad_dx = depth_grad_dx.contiguous().view_as(pred)
+                output_grad_dx = output_grad_dx.contiguous().view_as(pred)
 
                 output_grad_dy = output_grad[:, 1, :, :]
-                depth_grad_dx = depth_grad_dx.contiguous().view_as(pred)
+                output_grad_dy = output_grad_dy.contiguous().view_as(pred)
 
                 depth_normal = torch.cat(
                     (-depth_grad_dx, -depth_grad_dy, ones), 1)

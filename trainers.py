@@ -68,8 +68,9 @@ def parse_data(data):
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
     inputs = [rgb]
-    gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
-    return inputs, gt
+    gt = [gt_depth_1x, gt_depth_2x,  gt_depth_4x]
+    mask = [mask_1x, mask_2x, mask_4x]
+    return inputs, gt, mask
 
 
 def parse_data_sparse_depth(data):
@@ -89,9 +90,9 @@ def parse_data_sparse_depth(data):
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
     inputs = [torch.cat((rgb, sparse_depth), 1), sparse_depth]
-    gt = [gt_depth_1x, mask_1x, gt_depth_2x, mask_2x, gt_depth_4x, mask_4x]
-
-    return inputs, gt
+    gt = [gt_depth_1x, gt_depth_2x, gt_depth_4x]
+    mask = [mask_1x, mask_2x, mask_4x]
+    return inputs, gt, mask
 
 
 class MonoTrainer(object):
@@ -172,11 +173,11 @@ class MonoTrainer(object):
         '''
         return self.network(*inputs)
 
-    def compute_loss(self, output, gt):
+    def compute_loss(self, output, gt, mask):
         '''
         Returns the total loss
         '''
-        return self.criterion(output, gt[::2], gt[1::2])
+        return self.criterion(output, gt, mask)
 
     def backward_pass(self, loss):
         # Computes the backward pass and updates the optimizer
@@ -194,9 +195,10 @@ class MonoTrainer(object):
         for batch_num, data in enumerate(self.train_dataloader):
 
             # Parse the data into inputs, ground truth, and other
-            inputs, gt = self.parse_data(data)
+            inputs, gt, mask = self.parse_data(data)
             inputs = [tensor.to(self.device) for tensor in inputs]
             gt = [tensor.to(self.device) for tensor in gt]
+            mask = [tensor.to(self.device) for tensor in mask]
 
             # Run a forward pass
             forward_time = time.time()
@@ -204,7 +206,7 @@ class MonoTrainer(object):
             self.forward_time_meter.update(time.time() - forward_time)
 
             # Compute the loss(es)
-            loss = self.compute_loss(output, gt)
+            loss = self.compute_loss(output, gt, mask)
 
             # Backpropagation of the total loss
             backward_time = time.time()
@@ -221,11 +223,12 @@ class MonoTrainer(object):
 
                 # Visualize the loss
                 self.visualize_loss(batch_num, self.loss_meter.avg)
-                self.visualize_samples(inputs, gt, data, output)
+                self.visualize_samples(inputs, gt, mask, data, output)
 
                 # Print the most recent batch report
                 self.print_batch_report(batch_num)
                 self.loss_meter.reset()
+                # self.validate()
 
     def validate(self):
         print('Validating model....')
@@ -242,15 +245,16 @@ class MonoTrainer(object):
             for batch_num, data in enumerate(self.val_dataloader):
 
                 # Parse the data
-                inputs, gt = self.parse_data(data)
+                inputs, gt, mask = self.parse_data(data)
                 inputs = [tensor.to(self.device) for tensor in inputs]
                 gt = [tensor.to(self.device) for tensor in gt]
+                mask = [tensor.to(self.device) for tensor in mask]
 
                 # Run a forward pass
                 output = self.forward_pass(inputs)
 
                 # Compute the evaluation metrics
-                self.compute_eval_metrics(output, gt)
+                self.compute_eval_metrics(output, gt, mask)
 
                 # If trying to save intermediate outputs
                 if self.validation_sample_freq >= 0:
@@ -309,15 +313,16 @@ class MonoTrainer(object):
             for batch_num, data in enumerate(self.val_dataloader):
 
                 # Parse the data
-                inputs, gt = self.parse_data(data)
+                inputs, gt, mask = self.parse_data(data)
                 inputs = [tensor.to(self.device) for tensor in inputs]
                 gt = [tensor.to(self.device) for tensor in gt]
+                mask = [tensor.to(self.device) for tensor in mask]
 
                 # Run a forward pass
                 outputs = self.forward_pass(inputs)
 
                 # Compute the evaluation metrics
-                self.compute_eval_metrics(outputs, gt)
+                self.compute_eval_metrics(outputs, gt, mask)
 
                 if only_predict:
                     result = {
@@ -351,13 +356,13 @@ class MonoTrainer(object):
         self.d3_inlier_meter.reset()
         self.is_best = False
 
-    def compute_eval_metrics(self, output, gt):
+    def compute_eval_metrics(self, output, gt, mask):
         '''
         Computes metrics used to evaluate the model
         '''
         depth_pred = output[0]
         gt_depth = gt[0]
-        depth_mask = gt[1]
+        depth_mask = mask[0]
 
         N = depth_mask.sum()
 
@@ -470,14 +475,14 @@ class MonoTrainer(object):
             opts=dict(
                 legend=['Total Loss']))
 
-    def visualize_samples(self, inputs, gt, other, output):
+    def visualize_samples(self, inputs, gt, mask, other, output):
         '''
         Updates the output samples visualization
         '''
         rgb = inputs[0][0][0:3].cpu()
         depth_pred = output[0][0].cpu()
         gt_depth = gt[0][0].cpu()
-        depth_mask = gt[1][0].cpu()
+        depth_mask = mask[0][0].cpu()
 
         self.vis[0].image(
             visualize_rgb(rgb),
