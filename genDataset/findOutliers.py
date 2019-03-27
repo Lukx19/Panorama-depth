@@ -13,6 +13,8 @@ import cv2 as cv
 ##################
 # Reads EXR file #
 ##################
+
+
 def openexr(filename):
     '''
     fileInfo = OpenEXR.InputFile(filename)
@@ -30,9 +32,11 @@ def openexr(filename):
 ########################################
 # Calculates percentage over threshold #
 ########################################
+
+
 def percentageOverThreshold(depthMap, threshold):
     #count = np.where(depthMap > threshold).sum()
-    count = len(depthMap[ depthMap > threshold])
+    count = len(depthMap[depthMap > threshold])
     elementCount = depthMap.shape[0] * depthMap.shape[1]
     #elementCount = len(depthMap)
     return count / elementCount * 100
@@ -40,9 +44,11 @@ def percentageOverThreshold(depthMap, threshold):
 #########################################
 # Calculates percentage under threshold #
 #########################################
+
+
 def percentageUnderThreshold(depthMap, threshold):
     #count = len(np.where(depthMap < threshold))
-    count = len(depthMap[ depthMap < threshold])
+    count = len(depthMap[depthMap < threshold])
     elementCount = depthMap.shape[0] * depthMap.shape[1]
     #elementCount = len(depthMap)
     return count / elementCount * 100
