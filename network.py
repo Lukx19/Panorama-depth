@@ -5,7 +5,7 @@ __author__ = "Marc Eder"
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-# import torchvision.models as models
+import torchvision.models as models
 
 from util import xavier_init
 
@@ -246,10 +246,10 @@ class RectNet(nn.Module):
         return [opt_depth, pred_2x]
 
 
-class RectNet2(nn.Module):
+class RectNetCSPN(nn.Module):
 
     def __init__(self, in_channels, cspn=False):
-        super(RectNet2, self).__init__()
+        super(RectNetCSPN, self).__init__()
 
         # Network definition
         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(1, 4))
@@ -290,7 +290,11 @@ class RectNet2(nn.Module):
 
         self.cspn = cspn
         if self.cspn:
-            self.guidance = ConvELUBlock(64, 8, 3, padding=1)
+            self.guid_decode = ConvTransposeELUBlock(
+                256, 128, 4, stride=2, padding=1)
+            self.guid_conv_1 = ConvELUBlock(128, 128, 5, padding=2)
+            self.guid_conv_2 = ConvELUBlock(129, 64, 1)
+            self.guid_conv_3 = ConvELUBlock(64, 8, 3, padding=1)
             self.cspn = CSPN()
         # Initialize the network weights
         self.apply(xavier_init)
@@ -342,7 +346,7 @@ class RectNet2(nn.Module):
 
         # 2x downsampled prediction
         pred_2x = self.prediction0(decoder0_1_out)
-        upsampled_pred_2x = F.interpolate(pred_2x, scale_factor=2)
+        upsampled_pred_2x = F.interpolate(pred_2x.detach(), scale_factor=2)
 
         # Second decoding block
         decoder1_0_out = self.decoder1_0(decoder0_1_out)
@@ -354,9 +358,13 @@ class RectNet2(nn.Module):
         pred_1x = self.prediction1(decoder1_2_out)
 
         if self.cspn:
-            guidance = self.guidance(decoder1_2_out)
+            guidance0 = self.guid_decode(decoder0_1_out)
+            guidance1 = self.guid_conv_1(guidance0)
+            guidance2 = self.guid_conv_2(
+                torch.cat((upsampled_pred_2x, guidance1), 1))
+            guidance3 = self.guid_conv_3(guidance2)
             opt_depth = self.cspn(
-                guidance=guidance, blur_depth=pred_1x, sparse_depth=sparse_depth)
+                guidance=guidance3, blur_depth=pred_1x, sparse_depth=sparse_depth)
         else:
             opt_depth = pred_1x
 
@@ -367,7 +375,7 @@ class RectNet2(nn.Module):
 
 class UResNet(nn.Module):
 
-    def __init__(self, in_channels):
+    def __init__(self, in_channels, use_resnet=False):
         super(UResNet, self).__init__()
 
         self.input0 = ConvELUBlock(
@@ -442,6 +450,15 @@ class UResNet(nn.Module):
         self.prediction2 = nn.Conv2d(64, 1, 3, padding=1)
 
         self.apply(xavier_init)
+        print(self.named_children())
+        if use_resnet:
+            print("Using Resnet backbone")
+            self.resnet50 = models.resnet50(pretrained=True)
+            self.encoder0 = self.resnet50.layer1
+            self.encoder1 = self.resnet50.layer2
+            self.encoder2 = self.resnet50.layer3
+            self.encoder3 = self.resnet50.layer4
+        print(self.named_children())
 
     def forward(self, x):
 
