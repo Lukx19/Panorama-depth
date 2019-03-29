@@ -133,6 +133,7 @@ class GradLoss(nn.Module):
             gt = gt_list[i]
             mask = mask_list[i]
             b, _, w, h = pred.size()
+            print(pred.size(), gt.size(), mask.size())
             if i == 0:
                 ones = torch.ones(b, 1, w, h).float().cuda()
                 depth_grad = self.get_gradient(gt)

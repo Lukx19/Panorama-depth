@@ -1,0 +1,101 @@
+from network import *
+from criteria import *
+import argparse
+import dataset
+from trainers import parse_data, parse_data_sparse_depth
+
+
+def defineModelParameters(network_type, loss_type, add_points):
+    in_channels = 3
+    parser = parse_data
+    if add_points:
+        in_channels = 4
+        parser = parse_data_sparse_depth
+
+    rgb_transformer = dataset.default_transformer
+    depth_transformer = dataset.default_depth_transformer
+
+    # UResNet
+    if network_type == 'UResNet':
+        model = UResNet(in_channels)
+        alpha_list = [0.445, 0.275, 0.13]
+        beta_list = [0.15, 0., 0.]
+
+    elif network_type == 'RectNet':
+        model = RectNet(in_channels, cspn=False)
+        alpha_list = [0.535, 0.272]
+        beta_list = [0.134, 0.068, ]
+    elif network_type == 'RectNetCSPN':
+        model = RectNetCSPN(in_channels, cspn=True)
+        alpha_list = [0.535, 0.272]
+        beta_list = [0.134, 0.068, ]
+    else:
+        assert False, 'Unsupported network type'
+
+    criterion = None
+    if loss_type is not None:
+        if loss_type == "MultiScale":
+            criterion = MultiScaleL2Loss(alpha_list, beta_list)
+        elif loss_type == "Revis":
+            criterion = GradLoss()
+        else:
+            assert False, 'Unsupported loss type'
+    return model, criterion, parser, rgb_transformer, depth_transformer
+
+
+def parseArgs(test=False):
+    description = 'Training script for Panodepth training procedure'
+    if test:
+        description = 'Testing script for Panodepth'
+    parser = argparse.ArgumentParser(description=description)
+
+    parser.add_argument('experiment_name', type=str,
+                        help='Name of this experiment. Used to creat folder in checkpoint folder.')
+
+    parser.add_argument('--network_type', default="RectNet", type=str,
+                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet')
+
+    parser.add_argument('--add_points', action="store_true", default=False,
+                        help='In addition to monocular image also add sparse points to training.')
+
+    parser.add_argument('--dataset_dir', type=str, default="../datasets/",
+                        help='Dataset storage folder')
+
+    parser.add_argument('--gpu_ids', default='0,1', type=str,
+                        help='Ids of GPU to use for training')
+    parser.add_argument('--workers', default=4, type=int)
+
+    if test:
+        parser.add_argument('--test_list', type=str,
+                            default="./data_splits/original_p100_d20_test_split.txt",
+                            help='Validation list with data samples used in model validation')
+
+        parser.add_argument('--checkpoint', type=str, default=None,
+                            help='Path to checkpoint. Default checkpoint is used ased on experiment folder and best model in this folder')
+    else:
+        parser.add_argument('--train_list', type=str,
+                            default="./data_splits/original_p100_d20_train_split.txt",
+                            help='Trainig list with data filenames used for training')
+
+        parser.add_argument('--val_list', type=str,
+                            default="./data_splits/original_p100_d20_test_split.txt",
+                            help='Validation list with data samples used in model validation')
+
+        parser.add_argument('--checkpoint', type=str, default=None,
+                            help='Path to checkpoint')
+
+        parser.add_argument('--only_weights', action="store_true", default=False,
+                            help='Use only weights from checkpoint. Optimizer state or epoch information is     not restored.')
+
+        parser.add_argument('--loss_type', default="Revis", type=str,
+                            help='MultiScale or Revis')
+
+        parser.add_argument('--batch_size', default=8,
+                            type=int, help='Batch size')
+        parser.add_argument('--decay_step_size', default=3, type=int)
+        parser.add_argument('--decay_lr', default=0.5, type=float)
+        parser.add_argument('--epochs', default=10, type=int)
+        parser.add_argument('--lr', default=2e-4,
+                            type=float, help='Learning rate')
+
+    return parser.parse_args()

@@ -50,6 +50,12 @@ class ToTensor(object):
 default_transformer = transforms.Compose([ToTensor(scale=True)])
 default_depth_transformer = transforms.Compose([ToTensor(scale=False)])
 
+imagenet_transformer = transforms.Compose([
+    ToTensor(scale=True),
+    transforms.Normalize(mean=[0.485, 0.456, 0.406],
+                         std=[0.229, 0.224, 0.225])
+])
+
 
 class OmniDepthDataset(torch.utils.data.Dataset):
     '''PyTorch dataset module for effiicient loading'''

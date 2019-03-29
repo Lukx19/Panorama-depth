@@ -375,9 +375,9 @@ class RectNetCSPN(nn.Module):
 
 class UResNet(nn.Module):
 
-    def __init__(self, in_channels, use_resnet=False):
+    def __init__(self, in_channels):
         super(UResNet, self).__init__()
-
+        self.use_resnet = use_resnet
         self.input0 = ConvELUBlock(
             in_channels=in_channels,
             out_channels=32,
@@ -450,25 +450,13 @@ class UResNet(nn.Module):
         self.prediction2 = nn.Conv2d(64, 1, 3, padding=1)
 
         self.apply(xavier_init)
-        print(self.named_children())
-        if use_resnet:
-            print("Using Resnet backbone")
-            self.resnet50 = models.resnet50(pretrained=True)
-            self.encoder0 = self.resnet50.layer1
-            self.encoder1 = self.resnet50.layer2
-            self.encoder2 = self.resnet50.layer3
-            self.encoder3 = self.resnet50.layer4
-        print(self.named_children())
 
     def forward(self, x):
 
         # Encode down to 4x
         x = self.input0(x)
         x = self.input1(x)
-        x = self.encoder0(x)
-        x = self.encoder1(x)
-        x = self.encoder2(x)
-        x = self.encoder3(x)
+
         x = self.decoder0_0(x)
         x = self.decoder0_1(x)
         x = self.decoder1_0(x)
@@ -496,7 +484,51 @@ class UResNet(nn.Module):
         return [pred_1x, pred_2x, pred_4x]
 
 
+class DoubleBranchNet(nn.Module):
+
+    def __init__(self, in_channels):
+        super(DoubleBranchNet, self).__init__()
+
+        self.input0 = ConvELUBlock(
+            in_channels=in_channels,
+            out_channels=32,
+            kernel_size=7,
+            stride=1,
+            padding=3)
+        self.input1 = ConvELUBlock(
+            in_channels=32,
+            out_channels=64,
+            kernel_size=5,
+            stride=1,
+            padding=2)
+
+        self.apply(xavier_init)
+
+        print(self.named_children())
+
+        self.resnet50 = models.resnet50(pretrained=True)
+        self.encoder0 = self.resnet50.layer1
+        self.encoder1 = self.resnet50.layer2
+        self.encoder2 = self.resnet50.layer3
+        self.encoder3 = self.resnet50.layer4
+        print(self.named_children())
+
+    def forward(self, x):
+        # upsampled_pred_4x = F.interpolate(
+        #     pred_4x.detach(), scale_factor=2, mode='bilinear')
+        # Encode down to 4x
+        x = self.input0(x)
+        layer0 = self.input1(x)
+        layer1 = self.encoder0(layer0)
+        layer2 = self.encoder1(layer1)
+        layer3 = self.encoder2(layer2)
+        layer4 = self.encoder3(layer3)
+
+        return []
+
 # -----------------------------------------------------------------------------
+
+
 class ConvELUBlock(nn.Module):
 
     def __init__(self,
@@ -518,6 +550,34 @@ class ConvELUBlock(nn.Module):
 
     def forward(self, x):
         return F.elu(self.conv(x), inplace=True)
+
+
+class UpsampleShuffleBlock(nn.Module):
+
+    def __init__(self,
+                 in_channels,
+                 out_channels,
+                 upscale=2,
+                 use_shuffle=True
+                 ):
+        super(UpsampleShuffleBlock, self).__init__()
+
+        self.use_shuffle = use_shuffle
+        self.conv = nn.ConvTranspose2d(
+            in_channels=in_channels,
+            out_channels=out_channels,
+            kernel_size=1,
+            stride=1,
+            padding=0,
+            dilation=1)
+        self.bnorm = nn.BatchNorm2d(num_features=out_channels)
+        self.shuffle = nn.PixelShuffle(upscale_factor=upscale)
+
+    def forward(self, x):
+        x = F.relu(self.hnorm(self.conv(x)))
+        if self.use_shuffle:
+            x = self.shuffle(x)
+        return x
 
 
 # -----------------------------------------------------------------------------
