@@ -1,8 +1,16 @@
-import numpy as np
-import cv2
-import argparse
-import glob
+
+import os
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["OPENBLAS_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "6"
+os.environ["VECLIB_MAXIMUM_THREADS"] = "4"
+os.environ["NUMEXPR_NUM_THREADS"] = "6"
+
 import os.path as op
+import glob
+import argparse
+import cv2
+import numpy as np
 
 
 def createNewFileName(base_dir, basename, extention, to_replace, replace_by, postfix=None):
@@ -29,8 +37,9 @@ def main():
     if (not op.exists(args.dataset)):
         print("Directory: {} does not exist. Skipping.".format(args.dataset))
         return
-    image_files = glob.glob(args.dataset+'/*/*color*', recursive=True)
-
+    image_files = glob.glob(args.dataset + '/**/*color*', recursive=True)
+    # print(image_files)
+    # return
     for image_file in image_files:
         dirPath, file = op.split(image_file)
         basename, ext = op.splitext(file)
@@ -53,7 +62,7 @@ def main():
         sparse_depth = sparse_depth.astype(np.float32)
 
         # save to new file with postfix
-        postfix = "_D"+str(args.distance)+"_C"+str(args.max_points)
+        postfix = "_D" + str(args.distance) + "_C" + str(args.max_points)
         sparse_file = createNewFileName(
             dirPath, basename, ".exr", "color", "points", postfix=postfix)
         cv2.imwrite(sparse_file, sparse_depth)

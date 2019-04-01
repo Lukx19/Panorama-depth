@@ -11,7 +11,20 @@ import numpy as np
 from PIL import Image
 import util
 import matplotlib.pyplot as plt
-# import cv2
+import cv2
+
+
+def saveTensorDepth(filename, tensor, scale):
+    img = tensor.cpu().numpy()
+    img = np.squeeze(img)
+    # img = np.transpose(img, (1, 2, 0))
+    # print(img.shape)
+    img *= scale
+    cv2.imwrite(filename, img)
+    # img = Tt.functional.to_pil_image(img)
+    # img = Image.fromarray(img, mode="I")
+    # print(img)
+    # img.save(filename)
 
 
 class Axis(Enum):
@@ -35,15 +48,15 @@ def getRotationMatrix(axis, theta):
                          [0, 0, 0, 1]])
 
     if axis == Axis.Z:
-        return np.array([[math.cos(theta),  -math.sin(theta), 0, 0],
-                         [math.sin(theta),   math.cos(theta), 0, 0],
-                         [0,           0,           1,           0],
-                         [0,           0,           0,           1]])
+        return np.array([[math.cos(theta), -math.sin(theta), 0, 0],
+                         [math.sin(theta), math.cos(theta), 0, 0],
+                         [0, 0, 1, 0],
+                         [0, 0, 0, 1]])
     if axis == Axis.TILT:
-        return np.array([[1,           0,           0,           0],
-                         [0,           math.cos(theta),  -math.sin(theta), 0],
-                         [0,           math.sin(theta),   math.cos(theta), 0],
-                         [0,           0,           0,           1]])
+        return np.array([[1, 0, 0, 0],
+                         [0, math.cos(theta), -math.sin(theta), 0],
+                         [0, math.sin(theta), math.cos(theta), 0],
+                         [0, 0, 0, 1]])
         # R = R(1: 3, 1: 3)
     return np.eye(4, 4)
 
@@ -106,8 +119,8 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
     camera_center = np.array([0, 0, 0])
     w, h = depth.shape
     f_vir = 80
-    cx = w/2
-    cy = h/2
+    cx = w / 2
+    cy = h / 2
     fx = f_vir
     fy = f_vir
 
@@ -120,14 +133,14 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
         rot = getRotationMatrix(Axis.Y, theta)
         extrinsics = rot[0:3, 0:3] @ Rref
         virtual_cams.append(extrinsics)
-        local_depth = depth[:, (gap * i):(gap * (i+1))]
-        local_rgb = rgb[:, (gap * i):(gap * (i+1)), :]
+        local_depth = depth[:, (gap * i):(gap * (i + 1))]
+        local_rgb = rgb[:, (gap * i):(gap * (i + 1)), :]
         loc_points, loc_colors = createPcl(
             local_rgb, local_depth, cx, cy, fx, fy)
         if box_trans:
             loc_points = loc_points @ extrinsics + camera_center
         else:
-            loc_points = loc_points + np.array([i*gap + 50, 0, 0])
+            loc_points = loc_points + np.array([i * gap + 50, 0, 0])
 
         if points is None:
             points = loc_points
@@ -156,9 +169,9 @@ def panoDepthToPcl(depth, rgb, scale=1):
     hcam_deg = 180
     vcam_deg = 360
     # Camera rotation angles in radians
-    hcam_rad = hcam_deg/180.0*np.pi
-    vcam_rad = vcam_deg/180.0*np.pi
-    print(hcam_deg, vcam_deg)
+    hcam_rad = hcam_deg / 180.0 * np.pi
+    vcam_rad = vcam_deg / 180.0 * np.pi
+    # print(hcam_deg, vcam_deg)
     for v in range(h):
         for u in range(w):
             p_phi = (u - img_w_px / 2.0) / img_w_px * hcam_rad
@@ -194,22 +207,14 @@ def saveDepthMaps(rgb, gt, pred, filename):
     plt.close(fig)
 
 
-def main():
-    parser = argparse.ArgumentParser(
-        description='Generates test, train and validation splits for 360D')
-
-    parser.add_argument('results_folder', type=str, default="../datasets/",
-                        help='Dataset storage folder')
-
-    args = parser.parse_args()
-
-    output_dir = osp.join(args.results_folder, "./visualizations")
+def visualizePclDepth(results_dir):
+    output_dir = osp.join(results_dir, "./visualizations")
     os.makedirs(output_dir, exist_ok=True)
 
-    images = sorted(glob.glob(args.results_folder+"/*_color.jpg"))
-    gt_depths = sorted(glob.glob(args.results_folder+"/*_gt_depth.exr"))
-    pred_depths = sorted(glob.glob(args.results_folder+"/*_pred_depth.exr"))
-    # print(args.results_folder+"/*_color.jpg")
+    images = sorted(glob.glob(results_dir + "/*_color.jpg"))
+    gt_depths = sorted(glob.glob(results_dir + "/*_gt_depth.exr"))
+    pred_depths = sorted(glob.glob(results_dir + "/*_pred_depth.exr"))
+    # print(results_dir+"/*_color.jpg")
     # print(images, gt_depths, pred_depths)
 
     for img_path, gt_path, pred_path in zip(images, gt_depths, pred_depths):
@@ -232,6 +237,17 @@ def main():
         filename = osp.join(output_dir, basename + "_gt.ply")
         savePcl(pcd[0], pcd[1], filename)
         # draw_geometries([pcd])
+
+
+def main():
+    parser = argparse.ArgumentParser(
+        description='Generates test, train and validation splits for 360D')
+
+    parser.add_argument('results_folder', type=str, default="../datasets/",
+                        help='Dataset storage folder')
+
+    args = parser.parse_args()
+    visualizePclDepth(args.results_folder)
 
 
 if __name__ == "__main__":

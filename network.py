@@ -181,6 +181,7 @@ class RectNet(nn.Module):
     def forward(self, x, sparse_depth=None):
 
         # First filter bank
+        print(x.size())
         input0_0_out = self.input0_0(x)
         input0_1_out = self.input0_1(x)
         input0_2_out = self.input0_2(x)
@@ -196,7 +197,7 @@ class RectNet(nn.Module):
         input1_1_out = self.input1_1(input0_out_cat)
         input1_2_out = self.input1_2(input0_out_cat)
         input1_3_out = self.input1_3(input0_out_cat)
-
+        print(input1_3_out.size())
         # First encoding block
         encoder0_0_out = self.encoder0_0(
             torch.cat((input1_0_out,
@@ -205,30 +206,34 @@ class RectNet(nn.Module):
                        input1_3_out), 1))
         encoder0_1_out = self.encoder0_1(encoder0_0_out)
         encoder0_2_out = self.encoder0_2(encoder0_1_out)
-
+        print(encoder0_2_out.size())
         # Second encoding block
         encoder1_0_out = self.encoder1_0(encoder0_2_out)
         encoder1_1_out = self.encoder1_1(encoder1_0_out)
         encoder1_2_out = self.encoder1_2(encoder1_1_out)
         encoder1_3_out = self.encoder1_3(
             torch.cat((encoder1_1_out, encoder1_2_out), 1))
-
+        print(encoder1_3_out.size())
         # Third encoding block
         encoder2_0_out = self.encoder2_0(encoder1_3_out)
         encoder2_1_out = self.encoder2_1(encoder2_0_out)
         encoder2_2_out = self.encoder2_2(
             torch.cat((encoder2_0_out, encoder2_1_out), 1))
-
+        print(encoder2_2_out.size())
+        print("-------------------")
         # First decoding block
         decoder0_0_out = self.decoder0_0(encoder2_2_out)
+        print(decoder0_0_out.size())
         decoder0_1_out = self.decoder0_1(decoder0_0_out)
-
+        print(decoder0_1_out.size())
         # 2x downsampled prediction
         pred_2x = self.prediction0(decoder0_1_out)
         upsampled_pred_2x = F.interpolate(pred_2x.detach(), scale_factor=2)
 
         # Second decoding block
         decoder1_0_out = self.decoder1_0(decoder0_1_out)
+        print(decoder1_0_out.size())
+        print('***********')
         decoder1_1_out = self.decoder1_1(decoder1_0_out)
         decoder1_2_out = self.decoder1_2(
             torch.cat((upsampled_pred_2x, decoder1_1_out), 1))
@@ -484,47 +489,91 @@ class UResNet(nn.Module):
         return [pred_1x, pred_2x, pred_4x]
 
 
-class DoubleBranchNet(nn.Module):
+# class DoubleBranchNet(nn.Module):
 
-    def __init__(self, in_channels):
-        super(DoubleBranchNet, self).__init__()
+#     def __init__(self, in_channels):
+#         super(DoubleBranchNet, self).__init__()
 
-        self.input0 = ConvELUBlock(
-            in_channels=in_channels,
-            out_channels=32,
-            kernel_size=7,
-            stride=1,
-            padding=3)
-        self.input1 = ConvELUBlock(
-            in_channels=32,
-            out_channels=64,
-            kernel_size=5,
-            stride=1,
-            padding=2)
+#         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(1, 4))
+#         self.input0_1 = ConvELUBlock(in_channels, 8, (5, 11), padding=(2, 5))
+#         self.input0_2 = ConvELUBlock(in_channels, 8, (5, 7), padding=(2, 3))
+#         self.input0_3 = ConvELUBlock(in_channels, 8, 7, padding=3)
 
-        self.apply(xavier_init)
+#         self.input1_0 = ConvELUBlock(32, 16, (3, 9), padding=(1, 4))
+#         self.input1_1 = ConvELUBlock(32, 16, (3, 7), padding=(1, 3))
+#         self.input1_2 = ConvELUBlock(32, 16, (3, 5), padding=(1, 2))
+#         self.input1_3 = ConvELUBlock(32, 16, 5, padding=2)
 
-        print(self.named_children())
+#         self.encoder0_0 = ConvELUBlock(64, 128, 3, stride=2, padding=1)
+#         self.encoder0_1 = ConvELUBlock(128, 128, 3, padding=1)
+#         self.encoder0_2 = ConvELUBlock(128, 128, 3, padding=1)
 
-        self.resnet50 = models.resnet50(pretrained=True)
-        self.encoder0 = self.resnet50.layer1
-        self.encoder1 = self.resnet50.layer2
-        self.encoder2 = self.resnet50.layer3
-        self.encoder3 = self.resnet50.layer4
-        print(self.named_children())
+#         self.encoder1_0 = ConvELUBlock(128, 256, 3, stride=2, padding=1)
+#         self.encoder1_1 = ConvELUBlock(256, 256, 3, padding=2, dilation=2)
+#         self.encoder1_2 = ConvELUBlock(256, 256, 3, padding=4, dilation=4)
+#         self.encoder1_3 = ConvELUBlock(512, 256, 1)
 
-    def forward(self, x):
-        # upsampled_pred_4x = F.interpolate(
-        #     pred_4x.detach(), scale_factor=2, mode='bilinear')
-        # Encode down to 4x
-        x = self.input0(x)
-        layer0 = self.input1(x)
-        layer1 = self.encoder0(layer0)
-        layer2 = self.encoder1(layer1)
-        layer3 = self.encoder2(layer2)
-        layer4 = self.encoder3(layer3)
+#         self.encoder2_0 = ConvELUBlock(256, 512, 3, padding=8, dilation=8)
+#         self.encoder2_1 = ConvELUBlock(512, 512, 3, padding=16, dilation=16)
+#         self.encoder2_2 = ConvELUBlock(1024, 512, 1)
 
-        return []
+#         #  second branch goes from higher dim feature map to image level
+#         self.branch1_lvl3 = UpsampleShuffleBlock(
+#             512, upscale=2, use_shuffle=True)
+#         self.branch1_lvl2 = UpsampleShuffleBlock(
+#             256, upscale=2, use_shuffle=True)
+#         self.branch1_lvl1 = UpsampleShuffleBlock(
+#             128, upscale=2, use_shuffle=True)
+#         self.branch1_lvl0 = UpsampleShuffleBlock(
+#             64, upscale=2, use_shuffle=True)
+
+#         # third branch goes from higher dim to imahe level
+
+#         self.apply(xavier_init)
+
+#     def forward(self, x):
+#         # upsampled_pred_4x = F.interpolate(
+#         #     pred_4x.detach(), scale_factor=2, mode='bilinear')
+#                 # First filter bank
+#         input0_0_out = self.input0_0(x)
+#         input0_1_out = self.input0_1(x)
+#         input0_2_out = self.input0_2(x)
+#         input0_3_out = self.input0_3(x)
+#         input0_out_cat = torch.cat(
+#             (input0_0_out,
+#              input0_1_out,
+#              input0_2_out,
+#              input0_3_out), 1)
+
+#         # Second filter bank
+#         input1_0_out = self.input1_0(input0_out_cat)
+#         input1_1_out = self.input1_1(input0_out_cat)
+#         input1_2_out = self.input1_2(input0_out_cat)
+#         input1_3_out = self.input1_3(input0_out_cat)
+
+#         layer0 = torch.cat((input1_0_out,
+#                             input1_1_out,
+#                             input1_2_out,
+#                             input1_3_out), 1)
+#         # First encoding block
+#         encoder0_0_out = self.encoder0_0(layer0)
+#         encoder0_1_out = self.encoder0_1(encoder0_0_out)
+#         layer1 = self.encoder0_2(encoder0_1_out)
+
+#         # Second encoding block
+#         encoder1_0_out = self.encoder1_0(layer1)
+#         encoder1_1_out = self.encoder1_1(encoder1_0_out)
+#         encoder1_2_out = self.encoder1_2(encoder1_1_out)
+#         layer2 = self.encoder1_3(
+#             torch.cat((encoder1_1_out, encoder1_2_out), 1))
+
+#         # Third encoding block
+#         encoder2_0_out = self.encoder2_0(layer3)
+#         encoder2_1_out = self.encoder2_1(encoder2_0_out)
+#         layer3 = self.encoder2_2(
+#             torch.cat((encoder2_0_out, encoder2_1_out), 1))
+
+#         return []
 
 # -----------------------------------------------------------------------------
 
@@ -563,7 +612,7 @@ class UpsampleShuffleBlock(nn.Module):
         super(UpsampleShuffleBlock, self).__init__()
 
         self.use_shuffle = use_shuffle
-        self.conv = nn.ConvTranspose2d(
+        self.conv = nn.Conv2d(
             in_channels=in_channels,
             out_channels=out_channels,
             kernel_size=1,
@@ -574,7 +623,7 @@ class UpsampleShuffleBlock(nn.Module):
         self.shuffle = nn.PixelShuffle(upscale_factor=upscale)
 
     def forward(self, x):
-        x = F.relu(self.hnorm(self.conv(x)))
+        x = F.relu(self.hnorm(self.conv(x)), inplace=True)
         if self.use_shuffle:
             x = self.shuffle(x)
         return x

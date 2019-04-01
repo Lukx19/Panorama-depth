@@ -1,10 +1,11 @@
 import torch
 import torch.nn as nn
+
 import visdom
 from trainers import MonoTrainer
 import dataset
 from util import set_caffe_param_mult
-from run_utils import defineModelParameters, parseArgs
+from run_utils import defineModelParameters, parseArgs, setupGPUDevices
 
 import os.path as osp
 import os
@@ -24,27 +25,15 @@ validation_freq = 1
 visualization_freq = 5
 validation_sample_freq = -1
 
-device_ids = [int(s) for s in args.gpu_ids.split(',')]
-print(device_ids)
 model, criterion, parser, image_transformer, depth_transformer = defineModelParameters(
     args.network_type, args.loss_type, args.add_points)
-# -------------------------------------------------------
-# Fill in the rest
+
+network, criterion, device = setupGPUDevices(
+    gpus_list=args.gpu_ids, model=model, criterion=criterion)
+
 vis = visdom.Visdom()
 env = args.experiment_name
-device = torch.device('cuda', device_ids[0])
-criterion = criterion.to(device)
 
-# -------------------------------------------------------
-# Set up the training routine
-if len(device_ids) > 1:
-    network = nn.DataParallel(
-        model.float(),
-        device_ids=device_ids).to(device)
-elif len(device_ids) == 1:
-    network = model.float().to(device)
-else:
-    assert False, 'Cannot run without specifying GPU ids'
 
 train_dataloader = torch.utils.data.DataLoader(
     dataset=dataset.OmniDepthDataset(

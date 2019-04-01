@@ -72,6 +72,9 @@ def parseArgs(test=False):
 
         parser.add_argument('--checkpoint', type=str, default=None,
                             help='Path to checkpoint. Default checkpoint is used ased on experiment folder and best model in this folder')
+
+        parser.add_argument('--save_results', action="store_true", default=False,
+                            help='Save all generated outputs and inputs')
     else:
         parser.add_argument('--train_list', type=str,
                             default="./data_splits/original_p100_d20_train_split.txt",
@@ -99,3 +102,22 @@ def parseArgs(test=False):
                             type=float, help='Learning rate')
 
     return parser.parse_args()
+
+
+def setupGPUDevices(gpus_list, model, criterion=None):
+    device_ids = [int(s) for s in gpus_list.split(',')]
+    print(device_ids)
+    device = torch.device('cuda', device_ids[0])
+    if len(device_ids) > 1:
+        network = nn.DataParallel(
+            model.float(),
+            device_ids=device_ids).to(device)
+    elif len(device_ids) == 1:
+        network = model.float().to(device)
+    else:
+        assert False, 'Cannot run without specifying GPU ids'
+
+    if criterion is not None:
+        criterion = criterion.to(device)
+
+    return network, criterion, device

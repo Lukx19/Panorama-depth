@@ -8,6 +8,9 @@ import os.path as osp
 
 import util
 from metrics import *
+from visualizations import saveTensorDepth
+from PIL import Image
+import torchvision.transforms as Tt
 
 
 # From https://github.com/fyu/drn
@@ -68,7 +71,7 @@ def parse_data(data):
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
     inputs = [rgb]
-    gt = [gt_depth_1x, gt_depth_2x,  gt_depth_4x]
+    gt = [gt_depth_1x, gt_depth_2x, gt_depth_4x]
     mask = [mask_1x, mask_2x, mask_4x]
     return inputs, gt, mask
 
@@ -95,6 +98,42 @@ def parse_data_sparse_depth(data):
     return inputs, gt, mask
 
 
+def save_samples_default(data, outputs, results_dir):
+    '''
+    Saves samples of the network inputs and outputs
+    '''
+    pass
+
+
+def save_saples_for_pcl(data, outputs, results_dir):
+    # print(outputs)
+    d = data
+    o = outputs[0]
+    batch_size, _, _, _ = o.size()
+    # print(batch_size)
+    for i in range(batch_size):
+        # print(i)
+        unnorm_depth = 8
+        to_mm_depth = 1000
+        name = d['name'][i]
+        # print(name)
+        name = osp.join(results_dir, name)
+        gt = d['gt'][i]
+        sparse_points = d['sparse_depth'][i]
+        prediction = o[i]
+        img = d['image'][i]
+
+        saveTensorDepth(name + "_gt_depth.exr", gt, 1)
+        saveTensorDepth(name + "_pred_depth.exr", prediction, 1)
+        saveTensorDepth(name + "_sparse_depth.exr",
+                        sparse_points, unnorm_depth)
+
+        color_img = Tt.functional.to_pil_image(img.cpu())
+        color_img.save(name + "_color.jpg")
+
+        # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
+
+
 class MonoTrainer(object):
 
     def __init__(
@@ -108,6 +147,7 @@ class MonoTrainer(object):
             checkpoint_dir,
             device,
             parse_fce=parse_data,
+            save_samples_fce=save_samples_default,
             visdom=None,
             scheduler=None,
             num_epochs=20,
@@ -118,6 +158,7 @@ class MonoTrainer(object):
         # Name of this experiment
         self.name = name
         self.parse_data = parse_fce
+        self.save_samples = save_samples_fce
 
         # Class instances
         self.network = network
@@ -230,8 +271,12 @@ class MonoTrainer(object):
                 self.loss_meter.reset()
                 # self.validate()
 
-    def validate(self):
+    def validate(self, checkpoint_path=None, save_all_predictions=False):
         print('Validating model....')
+
+        if checkpoint_path is not None:
+            self.load_checkpoint(
+                checkpoint_path, weights_only=True, eval_mode=True)
 
         # Put the model in eval mode
         self.network = self.network.eval()
@@ -255,16 +300,20 @@ class MonoTrainer(object):
 
                 # Compute the evaluation metrics
                 self.compute_eval_metrics(output, gt, mask)
-
-                # If trying to save intermediate outputs
-                if self.validation_sample_freq >= 0:
-                    # Save the intermediate outputs
-                    if i % self.validation_sample_freq == 0:
-                        self.save_samples(data, output)
+                if save_all_predictions:
+                    self.save_samples(data, output, self.checkpoint_dir)
+                else:
+                    # If trying to save intermediate outputs
+                    if self.validation_sample_freq >= 0:
+                        # Save the intermediate outputs
+                        if batch_num % self.validation_sample_freq == 0:
+                            self.save_samples(
+                                data, output, self.checkpoint_dir)
 
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
-        self.print_validation_report()
+        report = self.print_validation_report()
+        return report
 
     def train(self, checkpoint_path=None, weights_only=False):
         print('Starting training')
@@ -292,56 +341,6 @@ class MonoTrainer(object):
                 self.validate()
                 self.save_checkpoint()
                 self.visualize_metrics()
-
-    def evaluate(self, checkpoint_path, only_predict=False):
-        print('Evaluating model....')
-
-        # Load the checkpoint to evaluate
-        self.load_checkpoint(
-            checkpoint_path, weights_only=True, eval_mode=True)
-
-        # Put the model in eval mode
-        self.network = self.network.eval()
-
-        # Reset meter
-        self.reset_eval_metrics()
-
-        # Load data
-        s = time.time()
-        results = []
-        with torch.no_grad():
-            for batch_num, data in enumerate(self.val_dataloader):
-
-                # Parse the data
-                inputs, gt, mask = self.parse_data(data)
-                inputs = [tensor.to(self.device) for tensor in inputs]
-                gt = [tensor.to(self.device) for tensor in gt]
-                mask = [tensor.to(self.device) for tensor in mask]
-
-                # Run a forward pass
-                outputs = self.forward_pass(inputs)
-
-                # Compute the evaluation metrics
-                self.compute_eval_metrics(outputs, gt, mask)
-
-                if only_predict:
-                    result = {
-                        "output": outputs[0],
-                        "data": data
-                    }
-                    results.append(result)
-                    continue
-
-                # If trying to save intermediate outputs
-                if self.validation_sample_freq >= 0:
-                    # Save the intermediate outputs
-                    if i % self.validation_sample_freq == 0:
-                        self.save_samples(data, outputs)
-
-        # Print a report on the validation results
-        print('Evaluation finished in {} seconds'.format(time.time() - s))
-        report = self.print_validation_report()
-        return report, results
 
     def reset_eval_metrics(self):
         '''
@@ -501,8 +500,8 @@ class MonoTrainer(object):
                 caption='Mask'))
 
         max_depth = max(
-            ((depth_mask > 0).float()*gt_depth).max().item(),
-            ((depth_mask > 0).float()*depth_pred).max().item())
+            ((depth_mask > 0).float() * gt_depth).max().item(),
+            ((depth_mask > 0).float() * depth_pred).max().item())
         self.vis[0].heatmap(
             depth_pred.squeeze().flip(0),
             env=self.vis[1],
@@ -536,7 +535,7 @@ class MonoTrainer(object):
 
         errors = torch.FloatTensor([abs_rel, sq_rel, lin_rms, log_rms])
         errors = errors.view(1, -1)
-        epoch_expanded = torch.ones(errors.shape) * (self.epoch+1)
+        epoch_expanded = torch.ones(errors.shape) * (self.epoch + 1)
         self.vis[0].line(
             env=self.vis[1],
             X=epoch_expanded,
@@ -548,7 +547,7 @@ class MonoTrainer(object):
 
         inliers = torch.FloatTensor([d1, d2, d3])
         inliers = inliers.view(1, -1)
-        epoch_expanded = torch.ones(inliers.shape) * (self.epoch+1)
+        epoch_expanded = torch.ones(inliers.shape) * (self.epoch + 1)
         self.vis[0].line(
             env=self.vis[1],
             X=epoch_expanded,
@@ -567,8 +566,8 @@ class MonoTrainer(object):
               'Forward Time {forward_time.val:.3f} ({forward_time.avg:.3f})\t'
               'Backward Time {backward_time.val:.3f} ({backward_time.avg:.3f})\n'
               'Loss {loss.val:.4f} ({loss.avg:.4f})\n\n'.format(
-                  self.epoch+1,
-                  batch_num+1,
+                  self.epoch + 1,
+                  batch_num + 1,
                   len(self.train_dataloader),
                   batch_time=self.batch_time_meter,
                   forward_time=self.forward_time_meter,
@@ -587,7 +586,7 @@ class MonoTrainer(object):
                   '  Inlier D1: {:.4f}\n'
                   '  Inlier D2: {:.4f}\n'
                   '  Inlier D3: {:.4f}\n\n'.format(
-                      self.epoch+1,
+                      self.epoch + 1,
                       self.abs_rel_error_meter.avg,
                       self.sq_rel_error_meter.avg,
                       math.sqrt(self.lin_rms_sq_error_meter.avg),
@@ -631,9 +630,3 @@ class MonoTrainer(object):
             'checkpoint_{:03d}.pth'.format(self.epoch + 1))
         shutil.copyfile(checkpoint_path, history_path)
         print('Checkpoint saved')
-
-    def save_samples(self, data, outputs):
-        '''
-        Saves samples of the network inputs and outputs
-        '''
-        pass
