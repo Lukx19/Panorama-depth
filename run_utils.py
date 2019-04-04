@@ -1,5 +1,7 @@
-from network import *
-from criteria import *
+import torch
+import torc.nn as nn
+from network import UResNet, RectNet, RectNetCSPN
+from criteria import GradLoss, MultiScaleL2Loss
 import argparse
 import dataset
 from trainers import parse_data, parse_data_sparse_depth
@@ -25,6 +27,10 @@ def defineModelParameters(network_type, loss_type, add_points):
         model = RectNet(in_channels, cspn=False)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
+    elif network_type == 'RectNetPad':
+        model = RectNet(in_channels, cspn=False, reflection_pad=True)
+        alpha_list = [0.535, 0.272]
+        beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetCSPN':
         model = RectNetCSPN(in_channels, cspn=True)
         alpha_list = [0.535, 0.272]
@@ -38,6 +44,8 @@ def defineModelParameters(network_type, loss_type, add_points):
             criterion = MultiScaleL2Loss(alpha_list, beta_list)
         elif loss_type == "Revis":
             criterion = GradLoss()
+        elif loss_type == "Revis_all":
+            criterion = GradLoss(all_levels=True)
         else:
             assert False, 'Unsupported loss type'
     return model, criterion, parser, rgb_transformer, depth_transformer
@@ -53,7 +61,7 @@ def parseArgs(test=False):
                         help='Name of this experiment. Used to creat folder in checkpoint folder.')
 
     parser.add_argument('--network_type', default="RectNet", type=str,
-                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet')
+                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet or RectNetPad')
 
     parser.add_argument('--add_points', action="store_true", default=False,
                         help='In addition to monocular image also add sparse points to training.')
@@ -71,7 +79,8 @@ def parseArgs(test=False):
                             help='Validation list with data samples used in model validation')
 
         parser.add_argument('--checkpoint', type=str, default=None,
-                            help='Path to checkpoint. Default checkpoint is used ased on experiment folder and best model in this folder')
+                            help='Path to checkpoint. Default checkpoint is used based \
+                            on experiment folder and best model in this folder')
 
         parser.add_argument('--save_results', action="store_true", default=False,
                             help='Save all generated outputs and inputs')
@@ -88,7 +97,8 @@ def parseArgs(test=False):
                             help='Path to checkpoint')
 
         parser.add_argument('--only_weights', action="store_true", default=False,
-                            help='Use only weights from checkpoint. Optimizer state or epoch information is     not restored.')
+                            help='Use only weights from checkpoint. Optimizer state or \
+                            epoch information is not restored.')
 
         parser.add_argument('--loss_type', default="Revis", type=str,
                             help='MultiScale or Revis')

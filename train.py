@@ -1,5 +1,4 @@
 import torch
-import torch.nn as nn
 
 import visdom
 from trainers import MonoTrainer
@@ -14,7 +13,9 @@ from test import test
 
 
 args = parseArgs(test=False)
-checkpoint_dir = osp.join('./experiments/', args.experiment_name)
+torch.manual_seed(19)
+experiment_name = args.network_type + "_" + args.loss_type + "_" + args.experiment_name
+checkpoint_dir = osp.join('./experiments/', experiment_name)
 os.makedirs(checkpoint_dir, exist_ok=True)
 
 with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
@@ -32,7 +33,7 @@ network, criterion, device = setupGPUDevices(
     gpus_list=args.gpu_ids, model=model, criterion=criterion)
 
 vis = visdom.Visdom()
-env = args.experiment_name
+env = experiment_name
 
 
 train_dataloader = torch.utils.data.DataLoader(
@@ -70,7 +71,7 @@ scheduler = torch.optim.lr_scheduler.StepLR(optimizer,
 
 
 trainer = MonoTrainer(
-    args.experiment_name,
+    experiment_name,
     network,
     train_dataloader,
     val_dataloader,
@@ -88,4 +89,4 @@ trainer = MonoTrainer(
 
 
 trainer.train(args.checkpoint, args.only_weights)
-test()
+test(experiment_name)

@@ -1,9 +1,7 @@
 import torch
-import torch.nn as nn
 
 
-from trainers import MonoTrainer, parse_data, parse_data_sparse_depth, save_saples_for_pcl
-from network import UResNet, RectNet
+from trainers import MonoTrainer, save_saples_for_pcl
 from dataset import OmniDepthDataset
 
 import json
@@ -16,17 +14,27 @@ from run_utils import parseArgs, defineModelParameters, setupGPUDevices
 # --------------
 
 
-def test():
+def test(experiment_name=None):
     args = parseArgs(test=True)
+    torch.manual_seed(19)
     checkpoint = args.checkpoint
+    if experiment_name is None:
+        expr_name = args.experiment_name
+    else:
+        expr_name = experiment_name
+
+    if osp.exists(expr_name):
+        experiment_folder = expr_name
+        expr_name = osp.basename(expr_name)
+    else:
+        experiment_folder = osp.join('./experiments/', expr_name)
+
     if args.checkpoint is None:
-        checkpoint = osp.join(
-            './experiments/', args.experiment_name, "model_best.pth")
+        checkpoint = osp.join(experiment_folder, "model_best.pth")
 
     print("Using checkpoint ", checkpoint)
 
-    results_dir = osp.join(
-        './experiments/', args.experiment_name, "./results/")
+    results_dir = osp.join(experiment_folder, "./results/")
     os.makedirs(results_dir, exist_ok=True)
 
     with open(osp.join(results_dir, 'test_args.txt'), 'w') as f:
@@ -56,7 +64,7 @@ def test():
         drop_last=False)
 
     trainer = MonoTrainer(
-        args.experiment_name,
+        expr_name,
         network,
         None,
         test_dataloader,

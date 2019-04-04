@@ -28,7 +28,8 @@ class Sobel(nn.Module):
 
 class SquaredGradientLoss(nn.Module):
     '''Compute the gradient magnitude of an image using the simple filters as in:
-    Garg, Ravi, et al. "Unsupervised cnn for single view depth estimation: Geometry to the rescue." European Conference on Computer Vision. Springer, Cham, 2016.
+    Garg, Ravi, et al. "Unsupervised cnn for single view depth estimation: Geometry to the rescue."
+    European Conference on Computer Vision. Springer, Cham, 2016.
     '''
 
     def __init__(self):
@@ -86,15 +87,15 @@ class MultiScaleL2Loss(nn.Module):
         self.alpha_list = alpha_list
         self.beta_list = beta_list
 
-    def forward(self, pred_list, gt_list, mask_list):
+    def forward(self, predictions, gt, mask_dict):
 
         # Go through each scale and accumulate errors
         depth_error = 0
-        for i in range(len(pred_list)):
+        for i in range(len(predictions)):
 
-            depth_pred = pred_list[i]
-            depth_gt = gt_list[i]
-            mask = mask_list[i]
+            depth_pred, scale = predictions[i]
+            depth_gt = gt[scale]
+            mask = mask_dict[scale]
             alpha = self.alpha_list[i]
             beta = self.beta_list[i]
 
@@ -114,28 +115,29 @@ class MultiScaleL2Loss(nn.Module):
 
 class GradLoss(nn.Module):
 
-    def __init__(self):
+    def __init__(self, all_levels=False):
 
         super(GradLoss, self).__init__()
         self.get_gradient = Sobel()
         self.l2_loss = L2Loss()
         self.cos = nn.CosineSimilarity(dim=1, eps=0)
+        self.all_levels = all_levels
 
     def createValidMean(self, mask, valid_pixels):
         def validMean(val):
             return (mask * val).sum() / valid_pixels
         return validMean
 
-    def forward(self, pred_list, gt_list, mask_list):
+    def forward(self, predictions, gt_dict, mask_dict):
         total_loss = 0
-        for i in range(len(pred_list)):
-            pred = pred_list[i]
-            gt = gt_list[i]
-            mask = mask_list[i]
+        for i in range(len(predictions)):
+            pred, scale = predictions[i]
+            gt = gt_dict[scale]
+            mask = mask_dict[scale]
             b, _, w, h = pred.size()
-            print(pred.size(), gt.size(), mask.size())
-            if i == 0:
-                ones = torch.ones(b, 1, w, h).float().cuda()
+            # print(scale, pred.size(), gt.size(), mask.size())
+            if i == 0 or self.all_levels:
+                ones = pred.new_ones(b, 1, w, h)
                 depth_grad = self.get_gradient(gt)
                 output_grad = self.get_gradient(pred)
 

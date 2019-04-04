@@ -7,9 +7,10 @@ import shutil
 import os.path as osp
 
 import util
-from metrics import *
+from metrics import (abs_rel_error, delta_inlier_ratio,
+                     lin_rms_sq_error, log_rms_sq_error, sq_rel_error)
+
 from visualizations import saveTensorDepth
-from PIL import Image
 import torchvision.transforms as Tt
 
 
@@ -58,7 +59,8 @@ def visualize_mask(mask):
 
 def parse_data(data):
     '''
-    Returns a list of the inputs as first output, a list of the GT as a second output, and alist of the remaining info as a third output. Must be implemented.
+    Returns a list of the inputs as first output, a list of the GT as a second output,
+    and alist of the remaining info as a third output. Must be implemented.
     '''
     # print(data)
 
@@ -71,14 +73,15 @@ def parse_data(data):
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
     inputs = [rgb]
-    gt = [gt_depth_1x, gt_depth_2x, gt_depth_4x]
-    mask = [mask_1x, mask_2x, mask_4x]
+    gt = {1: gt_depth_1x, 2: gt_depth_2x, 4: gt_depth_4x}
+    mask = {1: mask_1x, 2: mask_2x, 4: mask_4x}
     return inputs, gt, mask
 
 
 def parse_data_sparse_depth(data):
     '''
-    Returns a list of the inputs as first output, a list of the GT as a second output, and a list of the remaining info as a third output. Must be implemented.
+    Returns a list of the inputs as first output, a list of the GT as a second output,
+    and a list of the remaining info as a third output. Must be implemented.
     '''
     # print(data)
     rgb = data["image"]
@@ -93,8 +96,8 @@ def parse_data_sparse_depth(data):
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
     inputs = [torch.cat((rgb, sparse_depth), 1), sparse_depth]
-    gt = [gt_depth_1x, gt_depth_2x, gt_depth_4x]
-    mask = [mask_1x, mask_2x, mask_4x]
+    gt = {1: gt_depth_1x, 2: gt_depth_2x, 4: gt_depth_4x}
+    mask = {1: mask_1x, 2: mask_2x, 4: mask_4x}
     return inputs, gt, mask
 
 
@@ -108,13 +111,16 @@ def save_samples_default(data, outputs, results_dir):
 def save_saples_for_pcl(data, outputs, results_dir):
     # print(outputs)
     d = data
-    o = outputs[0]
+    o = None
+    for tensor, scale in outputs:
+        if scale == 1:
+            o = tensor.cpu()
+
     batch_size, _, _, _ = o.size()
     # print(batch_size)
     for i in range(batch_size):
         # print(i)
         unnorm_depth = 8
-        to_mm_depth = 1000
         name = d['name'][i]
         # print(name)
         name = osp.join(results_dir, name)
@@ -214,6 +220,17 @@ class MonoTrainer(object):
         '''
         return self.network(*inputs)
 
+    def augment_outputs(self, outputs):
+        if hasattr(self.network, 'anotateOutput'):
+            return self.network.anotateOutput(outputs)
+
+        if hasattr(self.network, 'model'):
+            try:
+                return self.network.model.anotateOutput(outputs)
+            except AttributeError:
+                raise Exception("Implement method anotateOutput in " + repr(self.network.model))
+        raise Exception("Implement method anotateOutput in " + repr(self.network))
+
     def compute_loss(self, output, gt, mask):
         '''
         Returns the total loss
@@ -238,8 +255,8 @@ class MonoTrainer(object):
             # Parse the data into inputs, ground truth, and other
             inputs, gt, mask = self.parse_data(data)
             inputs = [tensor.to(self.device) for tensor in inputs]
-            gt = [tensor.to(self.device) for tensor in gt]
-            mask = [tensor.to(self.device) for tensor in mask]
+            gt = dict([(k, tensor.to(self.device)) for k, tensor in gt.items()])
+            mask = dict([(k, tensor.to(self.device)) for k, tensor in mask.items()])
 
             # Run a forward pass
             forward_time = time.time()
@@ -292,8 +309,8 @@ class MonoTrainer(object):
                 # Parse the data
                 inputs, gt, mask = self.parse_data(data)
                 inputs = [tensor.to(self.device) for tensor in inputs]
-                gt = [tensor.to(self.device) for tensor in gt]
-                mask = [tensor.to(self.device) for tensor in mask]
+                gt = dict([(k, tensor.to(self.device)) for k, tensor in gt.items()])
+                mask = dict([(k, tensor.to(self.device)) for k, tensor in mask.items()])
 
                 # Run a forward pass
                 output = self.forward_pass(inputs)
@@ -359,9 +376,13 @@ class MonoTrainer(object):
         '''
         Computes metrics used to evaluate the model
         '''
-        depth_pred = output[0]
-        gt_depth = gt[0]
-        depth_mask = mask[0]
+        depth_pred = None
+        for tensor, scale in output:
+            if scale == 1:
+                depth_pred = tensor[0]
+
+        gt_depth = gt[1][0]
+        depth_mask = mask[1][0]
 
         N = depth_mask.sum()
 
@@ -479,9 +500,13 @@ class MonoTrainer(object):
         Updates the output samples visualization
         '''
         rgb = inputs[0][0][0:3].cpu()
-        depth_pred = output[0][0].cpu()
-        gt_depth = gt[0][0].cpu()
-        depth_mask = mask[0][0].cpu()
+        depth_pred = None
+        for tensor, scale in output:
+            if scale == 1:
+                depth_pred = tensor[0].cpu()
+
+        gt_depth = gt[1][0].cpu()
+        depth_mask = mask[1][0].cpu()
 
         self.vis[0].image(
             visualize_rgb(rgb),
