@@ -1,5 +1,5 @@
 import torch
-import torc.nn as nn
+import torch.nn as nn
 from network import UResNet, RectNet, RectNetCSPN
 from criteria import GradLoss, MultiScaleL2Loss
 import argparse
@@ -117,6 +117,11 @@ def parseArgs(test=False):
 def setupGPUDevices(gpus_list, model, criterion=None):
     device_ids = [int(s) for s in gpus_list.split(',')]
     print(device_ids)
+    if device_ids == "cpu":
+        device = torch.device("cpu")
+        network = model.float().to(device)
+        return network, criterion, device
+
     device = torch.device('cuda', device_ids[0])
     if len(device_ids) > 1:
         network = nn.DataParallel(

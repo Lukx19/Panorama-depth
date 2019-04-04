@@ -220,7 +220,7 @@ class MonoTrainer(object):
         '''
         return self.network(*inputs)
 
-    def augment_outputs(self, outputs):
+    def anotate_outputs(self, outputs):
         if hasattr(self.network, 'anotateOutput'):
             return self.network.anotateOutput(outputs)
 
@@ -260,7 +260,7 @@ class MonoTrainer(object):
 
             # Run a forward pass
             forward_time = time.time()
-            output = self.forward_pass(inputs)
+            output = self.anotate_outputs(self.forward_pass(inputs))
             self.forward_time_meter.update(time.time() - forward_time)
 
             # Compute the loss(es)
@@ -313,7 +313,7 @@ class MonoTrainer(object):
                 mask = dict([(k, tensor.to(self.device)) for k, tensor in mask.items()])
 
                 # Run a forward pass
-                output = self.forward_pass(inputs)
+                output = self.anotate_outputs(self.forward_pass(inputs))
 
                 # Compute the evaluation metrics
                 self.compute_eval_metrics(output, gt, mask)
