@@ -224,9 +224,9 @@ class MonoTrainer(object):
         if hasattr(self.network, 'anotateOutput'):
             return self.network.anotateOutput(outputs)
 
-        if hasattr(self.network, 'model'):
+        if hasattr(self.network, 'module'):
             try:
-                return self.network.model.anotateOutput(outputs)
+                return self.network.module.anotateOutput(outputs)
             except AttributeError:
                 raise Exception("Implement method anotateOutput in " + repr(self.network.model))
         raise Exception("Implement method anotateOutput in " + repr(self.network))

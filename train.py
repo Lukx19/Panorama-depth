@@ -89,4 +89,4 @@ trainer = MonoTrainer(
 
 
 trainer.train(args.checkpoint, args.only_weights)
-test(experiment_name)
+# test(experiment_name)
