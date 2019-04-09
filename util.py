@@ -41,8 +41,25 @@ def load_partial_model(model, loaded_state_dict):
     '''Loaded a save model, even if the model is not a perfect match. This will run even if there is are layers from the current network missing in the saved model.
     However, layers without a perfect match will be ignored.'''
     model_dict = model.state_dict()
-    pretrained_dict = {k: v for k,
-                       v in loaded_state_dict.items() if k in model_dict}
+    pretrained = []
+    ignored_layers = []
+    for k, v in loaded_state_dict.items():
+        #  all this hell is because DataParallel adds 'module.' layer name conv.bias
+        #  If trained on two gpus and testing is on one gpu then loading
+        # checkpoint needs to remove 'module.'
+        if k in model_dict:
+            pretrained.append((k, v))
+            continue
+
+        if 'module.' in k:
+            k = k[7:]
+        if k in model_dict:
+            pretrained.append((k, v))
+        else:
+            ignored_layers.append(k)
+
+    pretrained_dict = dict(pretrained)
+    print("ignored layers in partial model load:", ignored_layers)
     model_dict.update(pretrained_dict)
     model.load_state_dict(model_dict)
 
