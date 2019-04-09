@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from network import UResNet, RectNet, RectNetCSPN
+from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
 from criteria import GradLoss, MultiScaleL2Loss
 import argparse
 import dataset
@@ -35,6 +35,8 @@ def defineModelParameters(network_type, loss_type, add_points):
         model = RectNetCSPN(in_channels, cspn=True)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
+    elif network_type == "DBNet":
+        model = DoubleBranchNet(in_channels)
     else:
         assert False, 'Unsupported network type'
 
@@ -61,7 +63,7 @@ def parseArgs(test=False):
                         help='Name of this experiment. Used to creat folder in checkpoint folder.')
 
     parser.add_argument('--network_type', default="RectNet", type=str,
-                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet or RectNetPad')
+                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet or RectNetPad or DBNet')
 
     parser.add_argument('--add_points', action="store_true", default=False,
                         help='In addition to monocular image also add sparse points to training.')

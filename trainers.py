@@ -89,13 +89,16 @@ def parse_data_sparse_depth(data):
     gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
     gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
 
-    sparse_depth = data["sparse_depth"]
+    sparse_depth_1x = data["sparse_depth"]
+    sparse_depth_2x = F.interpolate(sparse_depth_1x, scale_factor=0.5)
+    sparse_depth_4x = F.interpolate(sparse_depth_1x, scale_factor=0.25)
 
-    mask_1x = data["mask"]
+    #  depth mask 1= valid pixel 0 = invalid
+    mask_1x = torch.abs(data["mask"] - torch.sign(sparse_depth_1x))
     mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
     mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
 
-    inputs = [torch.cat((rgb, sparse_depth), 1), sparse_depth]
+    inputs = [rgb, sparse_depth_1x, sparse_depth_2x, sparse_depth_4x]
     gt = {1: gt_depth_1x, 2: gt_depth_2x, 4: gt_depth_4x}
     mask = {1: mask_1x, 2: mask_2x, 4: mask_4x}
     return inputs, gt, mask
@@ -125,14 +128,16 @@ def save_saples_for_pcl(data, outputs, results_dir):
         # print(name)
         name = osp.join(results_dir, name)
         gt = d['gt'][i]
-        sparse_points = d['sparse_depth'][i]
         prediction = o[i]
         img = d['image'][i]
 
         saveTensorDepth(name + "_gt_depth.exr", gt, 1)
         saveTensorDepth(name + "_pred_depth.exr", prediction, 1)
-        saveTensorDepth(name + "_sparse_depth.exr",
-                        sparse_points, unnorm_depth)
+
+        if 'sparse_depth' in d and len(d['sparse_depth']) > 0:
+            sparse_points = d['sparse_depth'][i]
+            saveTensorDepth(name + "_sparse_depth.exr",
+                            sparse_points, unnorm_depth)
 
         color_img = Tt.functional.to_pil_image(img.cpu())
         color_img.save(name + "_color.jpg")

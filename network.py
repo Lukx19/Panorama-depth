@@ -219,7 +219,13 @@ class RectNet(nn.Module):
         # Initialize the network weights
         self.apply(xavier_init)
 
-    def forward(self, x, sparse_depth=None):
+    def forward(self, *inputs):
+        x = inputs[0]
+        if len(inputs) > 1:
+            sparse_depth = inputs[1]
+            x = torch.cat((x, sparse_depth), 1)
+        else:
+            sparse_depth = None
 
         # First filter bank
         # print(x.size())
@@ -353,7 +359,13 @@ class RectNetCSPN(nn.Module):
         # Initialize the network weights
         self.apply(xavier_init)
 
-    def forward(self, x, sparse_depth=None):
+    def forward(self, *inputs):
+        x = inputs[0]
+        if len(inputs) > 1:
+            sparse_depth = inputs[1]
+            x = torch.cat((x, sparse_depth), 1)
+        else:
+            sparse_depth = None
 
         # First filter bank
         input0_0_out = self.input0_0(x)
@@ -507,8 +519,13 @@ class UResNet(nn.Module):
 
         self.apply(xavier_init)
 
-    def forward(self, x, sparse_points=None):
-
+    def forward(self, *inputs):
+        x = inputs[0]
+        if len(inputs) > 1:
+            sparse_depth = inputs[1]
+            x = torch.cat((x, sparse_depth), 1)
+        else:
+            sparse_depth = None
         # Encode down to 4x
         x = self.input0(x)
         x = self.input1(x)
@@ -549,93 +566,158 @@ class UResNet(nn.Module):
                 anotate(outputs[2], scale=4)]
 
 
-# class DoubleBranchNet(nn.Module):
+class DoubleBranchNet(nn.Module):
 
-#     def __init__(self, in_channels):
-#         super(DoubleBranchNet, self).__init__()
+    def __init__(self, in_channels):
+        super(DoubleBranchNet, self).__init__()
+        self.use_shuffle = False
+        if in_channels == 4:
+            addition = 1
+            self.use_sparse_pts = True
+        else:
+            addition = 0
+            self.use_sparse_pts = False
+        # 256 x 512
+        self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(1, 4))
+        self.input0_1 = ConvELUBlock(in_channels, 8, (5, 11), padding=(2, 5))
+        self.input0_2 = ConvELUBlock(in_channels, 8, (5, 7), padding=(2, 3))
+        self.input0_3 = ConvELUBlock(in_channels, 8, 7, padding=3)
 
-#         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(1, 4))
-#         self.input0_1 = ConvELUBlock(in_channels, 8, (5, 11), padding=(2, 5))
-#         self.input0_2 = ConvELUBlock(in_channels, 8, (5, 7), padding=(2, 3))
-#         self.input0_3 = ConvELUBlock(in_channels, 8, 7, padding=3)
+        # 256 x 512
+        self.input1_0 = ConvELUBlock(32, 16, (3, 9), padding=(1, 4))
+        self.input1_1 = ConvELUBlock(32, 16, (3, 7), padding=(1, 3))
+        self.input1_2 = ConvELUBlock(32, 16, (3, 5), padding=(1, 2))
+        self.input1_3 = ConvELUBlock(32, 16, 5, padding=2)
 
-#         self.input1_0 = ConvELUBlock(32, 16, (3, 9), padding=(1, 4))
-#         self.input1_1 = ConvELUBlock(32, 16, (3, 7), padding=(1, 3))
-#         self.input1_2 = ConvELUBlock(32, 16, (3, 5), padding=(1, 2))
-#         self.input1_3 = ConvELUBlock(32, 16, 5, padding=2)
+        # 256 x 512
 
-#         self.encoder0_0 = ConvELUBlock(64, 128, 3, stride=2, padding=1)
-#         self.encoder0_1 = ConvELUBlock(128, 128, 3, padding=1)
-#         self.encoder0_2 = ConvELUBlock(128, 128, 3, padding=1)
+        self.encoder0_0 = ConvELUBlock(64, 128, 3, stride=2, padding=1)
+        self.encoder0_1 = ConvELUBlock(128, 128, 3, padding=1)
+        self.encoder0_2 = ConvELUBlock(128, 128, 3, padding=1)
 
-#         self.encoder1_0 = ConvELUBlock(128, 256, 3, stride=2, padding=1)
-#         self.encoder1_1 = ConvELUBlock(256, 256, 3, padding=2, dilation=2)
-#         self.encoder1_2 = ConvELUBlock(256, 256, 3, padding=4, dilation=4)
-#         self.encoder1_3 = ConvELUBlock(512, 256, 1)
+        # 128 x 512
 
-#         self.encoder2_0 = ConvELUBlock(256, 512, 3, padding=8, dilation=8)
-#         self.encoder2_1 = ConvELUBlock(512, 512, 3, padding=16, dilation=16)
-#         self.encoder2_2 = ConvELUBlock(1024, 512, 1)
+        self.encoder1_0 = ConvELUBlock(128, 256, 3, stride=2, padding=1)
+        self.encoder1_1 = ConvELUBlock(256, 256, 3, padding=2, dilation=2)
+        self.encoder1_2 = ConvELUBlock(256, 256, 3, padding=4, dilation=4)
+        self.encoder1_3 = ConvELUBlock(512, 256, 1)
 
-#         #  second branch goes from higher dim feature map to image level
-#         self.branch1_lvl3 = UpsampleShuffleBlock(
-#             512, upscale=2, use_shuffle=True)
-#         self.branch1_lvl2 = UpsampleShuffleBlock(
-#             256, upscale=2, use_shuffle=True)
-#         self.branch1_lvl1 = UpsampleShuffleBlock(
-#             128, upscale=2, use_shuffle=True)
-#         self.branch1_lvl0 = UpsampleShuffleBlock(
-#             64, upscale=2, use_shuffle=True)
+        # 64 x 128
 
-#         # third branch goes from higher dim to imahe level
+        self.encoder2_0 = ConvELUBlock(256, 512, 3, padding=8, dilation=8)
+        self.encoder2_1 = ConvELUBlock(512, 512, 3, padding=16, dilation=16)
+        self.encoder2_2 = ConvELUBlock(1024, 512, 1)
 
-#         self.apply(xavier_init)
+        # 64 x 128
 
-#     def forward(self, x):
-#         # upsampled_pred_4x = F.interpolate(
-#         #     pred_4x.detach(), scale_factor=2, mode='bilinear')
-#                 # First filter bank
-#         input0_0_out = self.input0_0(x)
-#         input0_1_out = self.input0_1(x)
-#         input0_2_out = self.input0_2(x)
-#         input0_3_out = self.input0_3(x)
-#         input0_out_cat = torch.cat(
-#             (input0_0_out,
-#              input0_1_out,
-#              input0_2_out,
-#              input0_3_out), 1)
+        self.decode_lvl3 = UpsampleShuffleBlock(
+            768 + addition, 512, upscale=2, use_shuffle=self.use_shuffle)
+        self.decode_conv_lvl3 = nn.Conv2d(768 + addition, 1, 1, padding=0)
+        self.decode_bil_lvl3 = nn.UpsamplingBilinear2d(scale_factor=2)
 
-#         # Second filter bank
-#         input1_0_out = self.input1_0(input0_out_cat)
-#         input1_1_out = self.input1_1(input0_out_cat)
-#         input1_2_out = self.input1_2(input0_out_cat)
-#         input1_3_out = self.input1_3(input0_out_cat)
+        # 128 x 512 x 128
 
-#         layer0 = torch.cat((input1_0_out,
-#                             input1_1_out,
-#                             input1_2_out,
-#                             input1_3_out), 1)
-#         # First encoding block
-#         encoder0_0_out = self.encoder0_0(layer0)
-#         encoder0_1_out = self.encoder0_1(encoder0_0_out)
-#         layer1 = self.encoder0_2(encoder0_1_out)
+        self.decode_lvl2 = UpsampleShuffleBlock(
+            256 + addition, 128, upscale=2, use_shuffle=self.use_shuffle)
+        self.decode_conv_lvl2 = nn.Conv2d(256 + addition, 1, 1, padding=0)
+        self.decode_bil_lvl2 = nn.UpsamplingBilinear2d(scale_factor=2)
 
-#         # Second encoding block
-#         encoder1_0_out = self.encoder1_0(layer1)
-#         encoder1_1_out = self.encoder1_1(encoder1_0_out)
-#         encoder1_2_out = self.encoder1_2(encoder1_1_out)
-#         layer2 = self.encoder1_3(
-#             torch.cat((encoder1_1_out, encoder1_2_out), 1))
+        # 256 x 512 x 32
 
-#         # Third encoding block
-#         encoder2_0_out = self.encoder2_0(layer3)
-#         encoder2_1_out = self.encoder2_1(encoder2_0_out)
-#         layer3 = self.encoder2_2(
-#             torch.cat((encoder2_0_out, encoder2_1_out), 1))
+        self.decode_conv_lvl1 = nn.Conv2d(96 + addition, 1, 1, padding=0)
+        # self.decode_lvl1 = UpsampleShuffleBlock(
+        #     129, 128, upscale=2, use_shuffle=True)
+        # self.decode_conv_lvl1 = nn.Conv2d(129, 1, 1, padding=0)
+        # self.decode_bil_lvl1 = nn.UpsamplingBilinear2d(scale_factor=2)
 
-#         return []
+        # self.decode_lvl1 = UpsampleShuffleBlock(
+        #     64, 128, upscale=2, use_shuffle=True)
+        # self.decode_conv_lvl1 = nn.Conv2d(129, 1, 1, padding=0)
+        # self.decode_bil_lvl1 = nn.UpsamplingBilinear2d(scale_factor=2)
+
+        self.apply(xavier_init)
+
+    def forward(self, *inputs):
+        x = inputs[0]
+        if len(inputs) > 1:
+            pts1x = inputs[1]
+            pts2x = inputs[2]
+            pts4x = inputs[3]
+            x = torch.cat((x, pts1x), 1)
+        # upsampled_pred_4x = F.interpolate(
+        #     pred_4x.detach(), scale_factor=2, mode='bilinear')
+        # First filter bank
+        input0_0_out = self.input0_0(x)
+        input0_1_out = self.input0_1(x)
+        input0_2_out = self.input0_2(x)
+        input0_3_out = self.input0_3(x)
+        layer0 = torch.cat(
+            (input0_0_out,
+             input0_1_out,
+             input0_2_out,
+             input0_3_out), 1)
+
+        # Second filter bank
+        input1_0_out = self.input1_0(layer0)
+        input1_3_out = self.input1_3(layer0)
+        input1_1_out = self.input1_1(layer0)
+        input1_2_out = self.input1_2(layer0)
+
+        layer1 = torch.cat((input1_0_out,
+                            input1_1_out,
+                            input1_2_out,
+                            input1_3_out), 1)
+        # First encoding block
+        encoder0_0_out = self.encoder0_0(layer1)
+        encoder0_1_out = self.encoder0_1(encoder0_0_out)
+        layer2 = self.encoder0_2(encoder0_1_out)
+
+        # Second encoding block
+        encoder1_0_out = self.encoder1_0(layer2)
+        encoder1_1_out = self.encoder1_1(encoder1_0_out)
+        encoder1_2_out = self.encoder1_2(encoder1_1_out)
+        encoder1_3_out = self.encoder1_3(
+            torch.cat((encoder1_1_out, encoder1_2_out), 1))
+
+        encoder2_0_out = self.encoder2_0(encoder1_3_out)
+        encoder2_1_out = self.encoder2_1(encoder2_0_out)
+        encoder2_2_out = self.encoder2_2(
+            torch.cat((encoder2_0_out, encoder2_1_out), 1))
+
+        if self.use_sparse_pts:
+            cat_lvl3 = torch.cat((encoder1_3_out, encoder2_2_out, pts4x), 1)
+        else:
+            cat_lvl3 = torch.cat((encoder1_3_out, encoder2_2_out), 1)
+        shuffle3_out = self.decode_lvl3(cat_lvl3)
+        # print(shuffle3_out.size())
+        res_scale4x = self.decode_conv_lvl3(cat_lvl3)
+        # print(res_scale4x.size())
+        bilin3_out = self.decode_bil_lvl3(res_scale4x)
+        if self.use_sparse_pts:
+            cat_lvl2 = torch.cat((layer2, shuffle3_out, pts2x), 1)
+        else:
+            cat_lvl2 = torch.cat((layer2, shuffle3_out), 1)
+        # print(layer2.size(), shuffle3_out.size())
+        shuffle2_out = self.decode_lvl2(cat_lvl2)
+        # print("lllll", shuffle2_out.size())
+        conv2_out = self.decode_conv_lvl2(cat_lvl2)
+        res_scale2x = bilin3_out + conv2_out
+        bilin2_out = self.decode_bil_lvl2(res_scale2x)
+        if self.use_sparse_pts:
+            cat_lvl1 = torch.cat((layer1, shuffle2_out, pts1x), 1)
+        else:
+            cat_lvl1 = torch.cat((layer1, shuffle2_out), 1)
+
+        conv1_out = self.decode_conv_lvl1(cat_lvl1)
+        res_scale1x = conv1_out + bilin2_out
+        return [res_scale1x, res_scale2x, res_scale4x]
+
+    def anotateOutput(self, outputs):
+        return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=2),
+                anotate(outputs[2], scale=4)]
 
 # -----------------------------------------------------------------------------
+
 
 class CircularPad1d(nn.Module):
     def __init__(self, padding):
@@ -730,12 +812,23 @@ class UpsampleShuffleBlock(nn.Module):
             padding=0,
             dilation=1)
         self.bnorm = nn.BatchNorm2d(num_features=out_channels)
-        self.shuffle = nn.PixelShuffle(upscale_factor=upscale)
+        if use_shuffle:
+            self.upscale = nn.PixelShuffle(upscale_factor=upscale)
+        else:
+            self.upscale = nn.ConvTranspose2d(
+                in_channels=out_channels,
+                out_channels=out_channels // 4,
+                kernel_size=4,
+                stride=2,
+                padding=1,
+                dilation=1)
 
     def forward(self, x):
-        x = F.relu(self.hnorm(self.conv(x)), inplace=True)
+        x = F.relu(self.bnorm(self.conv(x)), inplace=True)
         if self.use_shuffle:
-            x = self.shuffle(x)
+            x = self.upscale(x)
+        else:
+            x = F.elu(self.upscale(x), inplace=True)
         return x
 
 

@@ -55,10 +55,10 @@ val_dataloader = torch.utils.data.DataLoader(
         use_sparse_pts=args.add_points,
         transformer_depth=depth_transformer,
         transformer_rgb=image_transformer),
-    batch_size=args.batch_size,
+    batch_size=1,
     shuffle=False,
     num_workers=args.workers,
-    drop_last=True)
+    drop_last=False)
 
 
 # Set up network parameters with Caffe-like LR multipliers
