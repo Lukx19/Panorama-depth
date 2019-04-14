@@ -11,12 +11,13 @@ import glob
 import argparse
 import cv2
 import numpy as np
+from utils import read_tiff, write_tiff
 
 
 def createNewFileName(base_dir, basename, extention, to_replace, replace_by, postfix=None):
     name_parts = basename.split("_")
-    name_parts = list(map(lambda d: replace_by if d ==
-                          to_replace else d, name_parts))
+    name_parts = list(map(lambda d: replace_by if d
+                          == to_replace else d, name_parts))
     name = "_".join(name_parts)
     if postfix:
         name = name + postfix
@@ -26,7 +27,8 @@ def createNewFileName(base_dir, basename, extention, to_replace, replace_by, pos
 
 def main():
     parser = argparse.ArgumentParser(
-        description='Generate dataset with sparse depth images when provided with depth and rgb images')
+        description='Generate dataset with sparse depth images when provided \
+                        with depth and rgb images')
     parser.add_argument('dataset', type=str, help='Path to dataset')
     parser.add_argument('--distance', default=20, type=int,
                         help='Minimal distance between key-points in pixels')
@@ -44,7 +46,7 @@ def main():
         dirPath, file = op.split(image_file)
         basename, ext = op.splitext(file)
         depth_file = createNewFileName(
-            dirPath, basename, ".exr", "color", "depth")
+            dirPath, basename, ".tiff", "color", "depth")
 
         # find corners
         img = cv2.imread(image_file)
@@ -57,15 +59,15 @@ def main():
         depth_mask = np.zeros(img.shape[0:2])
         for corner in corners:
             depth_mask[corner[0][1], corner[0][0]] = 1
-        depth = cv2.imread(depth_file, cv2.IMREAD_ANYDEPTH)
+        depth = read_tiff(depth_file)
         sparse_depth = depth * depth_mask
         sparse_depth = sparse_depth.astype(np.float32)
 
         # save to new file with postfix
         postfix = "_D" + str(args.distance) + "_C" + str(args.max_points)
         sparse_file = createNewFileName(
-            dirPath, basename, ".exr", "color", "points", postfix=postfix)
-        cv2.imwrite(sparse_file, sparse_depth)
+            dirPath, basename, ".tiff", "color", "points", postfix=postfix)
+        write_tiff(sparse_file, sparse_depth)
 
         # print(sparse_depth[np.where(sparse_depth > 0,True,False)])
         print(sparse_file)

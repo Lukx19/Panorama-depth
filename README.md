@@ -30,7 +30,6 @@ Required ubuntu packages:
 ```
 sudo apt install build-essential
 sudo apt install libstdc++6
-sudo apt install libopenexr-dev
 ```
 
 [Set up a conda environment](https://conda.io/projects/conda/en/latest/user-guide/tasks/manage-environments.html#creating-an-environment-from-an-environment-yml-file)
@@ -38,6 +37,13 @@ sudo apt install libopenexr-dev
 ```
 conda env create -f environment.yml
 source activate panodepth
+```
+
+If you want need to run scripts to modify dataset you will need following dependencies
+
+```
+sudo apt install libopenexr-dev
+sudo apt install libproj-dev
 ```
 
 # Dataset

@@ -10,7 +10,7 @@ import util
 from metrics import (abs_rel_error, delta_inlier_ratio,
                      lin_rms_sq_error, log_rms_sq_error, sq_rel_error)
 
-from visualizations import saveTensorDepth
+from util import saveTensorDepth
 import torchvision.transforms as Tt
 
 
@@ -131,12 +131,12 @@ def save_saples_for_pcl(data, outputs, results_dir):
         prediction = o[i]
         img = d['image'][i]
 
-        saveTensorDepth(name + "_gt_depth.exr", gt, 1)
-        saveTensorDepth(name + "_pred_depth.exr", prediction, 1)
+        saveTensorDepth(name + "_gt_depth", gt, 1)
+        saveTensorDepth(name + "_pred_depth", prediction, 1)
 
         if 'sparse_depth' in d and len(d['sparse_depth']) > 0:
             sparse_points = d['sparse_depth'][i]
-            saveTensorDepth(name + "_sparse_depth.exr",
+            saveTensorDepth(name + "_sparse_depth",
                             sparse_points, unnorm_depth)
 
         color_img = Tt.functional.to_pil_image(img.cpu())
@@ -426,7 +426,7 @@ class MonoTrainer(object):
                 experiment_name = checkpoint['experiment']
                 self.vis[1] = experiment_name
                 self.best_d1_inlier = checkpoint['best_d1_inlier']
-                self.loss.from_dict(checkpoint['loss_meter'])
+                self.loss_meter.from_dict(checkpoint['loss_meter'])
             else:
                 print('NOTE: Loading weights only')
 

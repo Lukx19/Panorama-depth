@@ -1,6 +1,4 @@
 
-import OpenEXR
-# import open3d
 import os.path as osp
 import os
 import argparse
@@ -12,19 +10,6 @@ from PIL import Image
 import util
 import matplotlib.pyplot as plt
 import cv2
-
-
-def saveTensorDepth(filename, tensor, scale):
-    img = tensor.cpu().numpy()
-    img = np.squeeze(img)
-    # img = np.transpose(img, (1, 2, 0))
-    # print(img.shape)
-    img *= scale
-    cv2.imwrite(filename, img)
-    # img = Tt.functional.to_pil_image(img)
-    # img = Image.fromarray(img, mode="I")
-    # print(img)
-    # img.save(filename)
 
 
 class Axis(Enum):
@@ -63,9 +48,9 @@ def getRotationMatrix(axis, theta):
 
 def savePcl(points, rgb, file):
     encoded = []
-    if rgb is None:
-        for pt in zip(points):
-            encoded.append("%f %f %f %d %d %d 0\n" % (pt[0], pt[1], pt[2]))
+    if rgb is None or len(rgb) == 0:
+        for pt in points:
+            encoded.append("%f %f %f %d %d %d 0\n" % (pt[0], pt[1], pt[2], 250, 250, 250))
     else:
         for pt, color in zip(points, rgb):
             encoded.append("%f %f %f %d %d %d 0\n" %
@@ -159,7 +144,7 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
 def panoDepthToPcl(depth, rgb, scale=1):
     points = []
     colors = []
-    w, h, ch = rgb.shape
+    w, h = depth.shape
 
     # Photo resolution
     img_w_px = w
@@ -179,12 +164,18 @@ def panoDepthToPcl(depth, rgb, scale=1):
 
             # Transform into cartesian coordinates
             radius = (depth[u, v] * scale)
+            if radius < 0.001 or radius > 8:
+                continue
+            # radius = 1
             X = radius * math.cos(p_phi) * math.cos(p_theta)
             Y = radius * math.cos(p_phi) * math.sin(p_theta)
             Z = radius * math.sin(p_phi)
 
             points.append([X, Y, Z])
-            colors.append(rgb[u, v])
+            if rgb is not None:
+                colors.append(rgb[u, v])
+            else:
+                colors.append([250, 250, 250])
     return [np.array(points), np.array(colors)]
 
 
@@ -212,8 +203,8 @@ def visualizePclDepth(results_dir):
     os.makedirs(output_dir, exist_ok=True)
 
     images = sorted(glob.glob(results_dir + "/*_color.jpg"))
-    gt_depths = sorted(glob.glob(results_dir + "/*_gt_depth.exr"))
-    pred_depths = sorted(glob.glob(results_dir + "/*_pred_depth.exr"))
+    gt_depths = sorted(glob.glob(results_dir + "/*_gt_depth.tiff"))
+    pred_depths = sorted(glob.glob(results_dir + "/*_pred_depth.tiff"))
     # print(results_dir+"/*_color.jpg")
     # print(images, gt_depths, pred_depths)
 
@@ -222,8 +213,8 @@ def visualizePclDepth(results_dir):
         basename = osp.basename(img_path)
         basename = osp.splitext(basename)[0]
         print(basename)
-        depth_gt = np.squeeze(util.read_exr(gt_path))
-        depth_pred = np.squeeze(util.read_exr(pred_path))
+        depth_gt = np.squeeze(util.read_tiff(gt_path))
+        depth_pred = np.squeeze(util.read_tiff(pred_path))
         rgb = np.asarray(Image.open(img_path))
 
         filename = osp.join(output_dir, basename + ".png")
@@ -250,5 +241,32 @@ def main():
     visualizePclDepth(args.results_folder)
 
 
+def main2():
+    parser = argparse.ArgumentParser(
+        description='Generates test, train and validation splits for 360D')
+
+    parser.add_argument('results_folder', type=str, default="../datasets/",
+                        help='Dataset storage folder')
+    parser.add_argument('--regex', type=str, default="/**/*_depth_*.tiff")
+
+    args = parser.parse_args()
+    results_dir = args.results_folder
+
+    depths = sorted(glob.glob(results_dir + "/**/" + args.regex, recursive=True))
+    # print(results_dir+"/*_color.jpg")
+    # print(images, gt_depths, pred_depths)
+
+    for depth_path in depths:
+        if depth_path[-3:] == 'exr':
+            raw_depth = util.read_exr(depth_path)
+            depth = np.squeeze(raw_depth[..., 0]).astype(np.float32)
+            filename = depth_path[:-3] + "ply"
+        else:
+            depth = np.squeeze(util.read_tiff(depth_path))
+            filename = depth_path[:-4] + "ply"
+        pcd = panoDepthToPcl(depth, None)
+        savePcl(pcd[0], pcd[1], filename)
+
+
 if __name__ == "__main__":
-    main()
+    main2()

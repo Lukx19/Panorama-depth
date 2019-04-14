@@ -2,7 +2,6 @@ import torch
 import torch.nn as nn
 
 import numpy as np
-import OpenEXR
 import Imath
 import array
 
@@ -10,6 +9,7 @@ import os
 import os.path as osp
 import shutil
 from PIL import Image
+from skimage import io
 
 
 def mkdirs(path):
@@ -82,27 +82,37 @@ def set_caffe_param_mult(m, base_lr, base_weight_decay):
     param_list = []
     for name, params in m.named_parameters():
         if name.find('bias') != -1:
-            param_list.append({'params': params, 'lr': 2 *
-                               base_lr, 'weight_decay': 0.0})
+            param_list.append({'params': params, 'lr': 2
+                               * base_lr, 'weight_decay': 0.0})
         else:
             param_list.append({'params': params, 'lr': base_lr,
                                'weight_decay': base_weight_decay})
     return param_list
 
 
-def read_exr(image_fpath):
-    f = OpenEXR.InputFile(image_fpath)
-    dw = f.header()['dataWindow']
-    w, h = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
-    # Read in the EXR
-    n_channels = len(f.header()["channels"])
-    im = np.empty((h, w, n_channels))
-    FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
-    if n_channels == 3:
-        channels = f.channels(["R", "G", "B"], FLOAT)
-    else:
-        channels = f.channels(["Y"], FLOAT)
+def read_tiff(image_fpath):
+    img = io.imread(image_fpath)
+    return img
 
-    for i, channel in enumerate(channels):
-        im[:, :, i] = np.reshape(array.array('f', channel), (h, w))
-    return im
+
+def write_tiff(image_fpath, data):
+    if len(data.shape) > 2 and data.shape[2] > 3:
+        raise Exception("write tiff can write only data with up to 3 channels")
+
+    if image_fpath[-5:] != ".tiff":
+        io.imsave(image_fpath + ".tiff", data, check_contrast=False)
+    else:
+        io.imsave(image_fpath, data, check_contrast=False)
+
+
+def saveTensorDepth(filename, tensor, scale):
+    img = tensor.cpu().numpy()
+    img = np.squeeze(img)
+    # img = np.transpose(img, (1, 2, 0))
+    # print(img.shape)
+    img *= scale
+    write_tiff(filename, img)
+    # img = Tt.functional.to_pil_image(img)
+    # img = Image.fromarray(img, mode="I")
+    # print(img)
+    # img.save(filename)

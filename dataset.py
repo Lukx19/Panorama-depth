@@ -9,13 +9,13 @@ import torchvision.transforms as transforms
 
 import numpy as np
 from skimage import io
-import OpenEXR
 import Imath
 import array
 from PIL import Image
 
 import math
 import os.path as osp
+from util import read_tiff
 
 
 class ToTensor(object):
@@ -130,23 +130,5 @@ class OmniDepthDataset(torch.utils.data.Dataset):
         return len(self.image_list)
 
     def readDepthPano(self, path):
-        data = self.read_exr(path)[..., 0].astype(np.float32)
+        data = read_tiff(path).astype(np.float32)
         return np.reshape(data, (*data.shape, 1))
-
-    def read_exr(self, image_fpath):
-        f = OpenEXR.InputFile(image_fpath)
-        dw = f.header()['dataWindow']
-        w, h = (dw.max.x - dw.min.x + 1, dw.max.y - dw.min.y + 1)
-        im = np.empty((h, w, 3))
-
-        # Read in the EXR
-        n_channels = len(f.header()["channels"])
-        FLOAT = Imath.PixelType(Imath.PixelType.FLOAT)
-        if n_channels == 3:
-            channels = f.channels(["R", "G", "B"], FLOAT)
-        else:
-            channels = f.channels(["Y"], FLOAT)
-
-        for i, channel in enumerate(channels):
-            im[:, :, i] = np.reshape(array.array('f', channel), (h, w))
-        return im
