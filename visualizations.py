@@ -12,7 +12,6 @@ import util
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
-import cv2
 
 
 class Axis(Enum):
@@ -147,7 +146,7 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
 def panoDepthToPcl(depth, rgb, scale=1):
     points = []
     colors = []
-    width, height = depth.shape
+    height, width = depth.shape
 
     # Camera rotation angles
     hcam_deg = 360
@@ -158,11 +157,11 @@ def panoDepthToPcl(depth, rgb, scale=1):
     # print(hcam_deg, vcam_deg)
     for v in range(height):
         for u in range(width):
-            p_phi = (u - width / 2.0) / width * vcam_rad
-            p_theta = -(v - height / 2.0) / height * hcam_rad
+            p_theta = (u - width / 2.0) / width * hcam_rad
+            p_phi = -(v - height / 2.0) / height * vcam_rad
 
             # Transform into cartesian coordinates
-            radius = (depth[u, v] * scale)
+            radius = (depth[v, u] * scale)
             if radius < 0.001 or radius > 8:
                 continue
             # radius = 1
@@ -263,6 +262,8 @@ def main2():
         else:
             depth = np.squeeze(util.read_tiff(depth_path))
             filename = depth_path[:-4] + "ply"
+
+        print(filename)
         pcd = panoDepthToPcl(depth, None)
         savePcl(pcd[0], pcd[1], filename)
 

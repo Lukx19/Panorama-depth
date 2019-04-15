@@ -26,6 +26,34 @@ class Sobel(nn.Module):
         return out
 
 
+class Depth2Points(nn.Module):
+    def __init__(self, height, width):
+        phi = torch.zeros((height, width))
+        theta = torch.zeros((height, width))
+
+        hcam_deg = 360
+        vcam_deg = 180
+        # Camera rotation angles in radians
+        hcam_rad = hcam_deg / 180.0 * np.pi
+        vcam_rad = vcam_deg / 180.0 * np.pi
+        # print(hcam_deg, vcam_deg)
+        for v in range(height):
+            for u in range(width):
+                theta[v, u] = (u - width / 2.0) / width * hcam_rad
+                phi[v, u] = -(v - height / 2.0) / height * vcam_rad
+        self.cos_theta = torch.cos(theta)
+        self.sin_theta = torch.sin(theta)
+        self.cos_phi = torch.cos(phi)
+        self.sin_phi = torch.sin(phi)
+
+    def forward(self, depth, mask):
+        X = depth * self.cos_phi * self.cos_theta * mask
+        Y = depth * self.cos_phi * self.sin_theta * mask
+        Z = depth * self.sin_phi * mask
+        points = torch.cat((X, Y, Z), dim=1)
+        return points
+
+
 class SquaredGradientLoss(nn.Module):
     '''Compute the gradient magnitude of an image using the simple filters as in:
     Garg, Ravi, et al. "Unsupervised cnn for single view depth estimation: Geometry to the rescue."
