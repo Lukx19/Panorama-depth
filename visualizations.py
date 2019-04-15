@@ -8,6 +8,9 @@ import math
 import numpy as np
 from PIL import Image
 import util
+
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import cv2
 
@@ -144,23 +147,19 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
 def panoDepthToPcl(depth, rgb, scale=1):
     points = []
     colors = []
-    w, h = depth.shape
-
-    # Photo resolution
-    img_w_px = w
-    img_h_px = h
+    width, height = depth.shape
 
     # Camera rotation angles
-    hcam_deg = 180
-    vcam_deg = 360
+    hcam_deg = 360
+    vcam_deg = 180
     # Camera rotation angles in radians
     hcam_rad = hcam_deg / 180.0 * np.pi
     vcam_rad = vcam_deg / 180.0 * np.pi
     # print(hcam_deg, vcam_deg)
-    for v in range(h):
-        for u in range(w):
-            p_phi = (u - img_w_px / 2.0) / img_w_px * hcam_rad
-            p_theta = -(v - img_h_px / 2.0) / img_h_px * vcam_rad
+    for v in range(height):
+        for u in range(width):
+            p_phi = (u - width / 2.0) / width * vcam_rad
+            p_theta = -(v - height / 2.0) / height * hcam_rad
 
             # Transform into cartesian coordinates
             radius = (depth[u, v] * scale)
@@ -215,7 +214,7 @@ def visualizePclDepth(results_dir):
         print(basename)
         depth_gt = np.squeeze(util.read_tiff(gt_path))
         depth_pred = np.squeeze(util.read_tiff(pred_path))
-        rgb = np.asarray(Image.open(img_path))
+        rgb = np.array(Image.open(img_path))
 
         filename = osp.join(output_dir, basename + ".png")
         saveDepthMaps(rgb, depth_gt, depth_pred, filename)
@@ -269,4 +268,4 @@ def main2():
 
 
 if __name__ == "__main__":
-    main2()
+    main()

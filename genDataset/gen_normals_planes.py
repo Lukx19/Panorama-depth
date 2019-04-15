@@ -21,7 +21,7 @@ def main():
     if (not osp.exists(args.dataset)):
         print("Directory: {} does not exist. Skipping.".format(args.dataset))
         return
-    filenames = glob.glob(args.dataset + '/**/*_depth_*.tiff', recursive=True)
+    filenames = sorted(glob.glob(args.dataset + '/**/*_depth_*.tiff', recursive=True))
 
     pool = Pool(2 * os.cpu_count() // 3)
     for _ in tqdm.tqdm(pool.imap_unordered(process_depth, filenames), total=len(filenames)):

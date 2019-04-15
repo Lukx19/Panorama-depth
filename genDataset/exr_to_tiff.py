@@ -38,7 +38,7 @@ def main():
         print("Directory: {} does not exist.".format(args.dataset))
         return
 
-    image_files = glob.glob(args.dataset + '/**/*.exr', recursive=True)
+    image_files = sorted(glob.glob(args.dataset + '/**/*.exr', recursive=True))
     for image_file in tqdm(image_files):
         depth = read_exr(image_file)[..., 0].astype(np.float32)
         write_tiff(image_file[:-3] + "tiff", depth)
