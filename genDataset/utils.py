@@ -11,6 +11,6 @@ def write_tiff(image_fpath, data):
         raise Exception("write tiff can write only data with up to 3 channels")
 
     if image_fpath[-5:] != ".tiff":
-        io.imsave(image_fpath + ".tiff", data, check_contrast=False)
+        io.imsave(image_fpath + ".tiff", data, check_contrast=False, compress=6)
     else:
-        io.imsave(image_fpath, data, check_contrast=False)
+        io.imsave(image_fpath, data, check_contrast=False, compress=6)
