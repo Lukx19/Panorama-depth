@@ -7,6 +7,8 @@ import Imath
 import array
 from utils import write_tiff
 from tqdm import tqdm
+from multiprocessing import Pool
+import os
 
 
 def read_exr(image_fpath):
@@ -28,6 +30,11 @@ def read_exr(image_fpath):
     return im
 
 
+def convert(image_file):
+    depth = read_exr(image_file)[..., 0].astype(np.float32)
+    write_tiff(image_file[:-3] + "tiff", depth)
+
+
 def main():
     parser = argparse.ArgumentParser(
         description='Generate dataset with sparse depth images when provided with depth and rgb images')
@@ -39,9 +46,9 @@ def main():
         return
 
     image_files = sorted(glob.glob(args.dataset + '/**/*.exr', recursive=True))
-    for image_file in tqdm(image_files):
-        depth = read_exr(image_file)[..., 0].astype(np.float32)
-        write_tiff(image_file[:-3] + "tiff", depth)
+    pool = Pool(2 * os.cpu_count() // 3)
+    for _ in tqdm(pool.imap_unordered(convert, image_files), total=len(image_files)):
+        pass
 
 
 if __name__ == '__main__':
