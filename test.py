@@ -8,7 +8,7 @@ import json
 import os
 
 import os.path as osp
-from run_utils import parseArgs, defineModelParameters, setupGPUDevices
+from run_utils import parseArgs, setupPipeline, setupGPUDevices
 # --------------
 # PARAMETERS
 # --------------
@@ -45,7 +45,7 @@ def test(experiment_name=None):
     visualization_freq = 5
     validation_sample_freq = -1
 
-    model, _, parser, image_transformer, depth_transformer = defineModelParameters(
+    model, _, parser, image_transformer, depth_transformer = setupPipeline(
         network_type=args.network_type, loss_type=None, add_points=args.add_points)
 
     network, _, device = setupGPUDevices(
@@ -57,7 +57,10 @@ def test(experiment_name=None):
             path_to_img_list=args.test_list,
             use_sparse_pts=args.add_points,
             transformer_depth=depth_transformer,
-            transformer_rgb=image_transformer),
+            transformer_rgb=image_transformer,
+            use_normals=args.load_normals,
+            use_planes=args.load_planes,
+        ),
         batch_size=1,
         shuffle=False,
         num_workers=args.workers,

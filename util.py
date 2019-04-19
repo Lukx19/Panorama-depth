@@ -2,13 +2,10 @@ import torch
 import torch.nn as nn
 
 import numpy as np
-import Imath
-import array
 
 import os
 import os.path as osp
 import shutil
-from PIL import Image
 from skimage import io
 
 
@@ -38,7 +35,8 @@ def save_checkpoint(state, is_best, filename):
 
 
 def load_partial_model(model, loaded_state_dict):
-    '''Loaded a save model, even if the model is not a perfect match. This will run even if there is are layers from the current network missing in the saved model.
+    '''Loaded a save model, even if the model is not a perfect match. This will run even if there \
+        is are layers from the current network missing in the saved model.
     However, layers without a perfect match will be ignored.'''
     model_dict = model.state_dict()
     pretrained = []
@@ -65,7 +63,9 @@ def load_partial_model(model, loaded_state_dict):
 
 
 def load_optimizer(optimizer, loaded_optimizer_dict, device):
-    '''Loads the saved state of the optimizer and puts it back on the GPU if necessary.  Similar to loading the partial model, this will load only the optimization parameters that match the current parameterization.'''
+    '''Loads the saved state of the optimizer and puts it back on the GPU if necessary. \
+        Similar to loading the partial model, this will load only the optimization \
+        parameters that match the current parameterization.'''
     optimizer_dict = optimizer.state_dict()
     pretrained_dict = {k: v for k, v in loaded_optimizer_dict.items()
                        if k in optimizer_dict and k != 'param_groups'}
@@ -78,12 +78,13 @@ def load_optimizer(optimizer, loaded_optimizer_dict, device):
 
 
 def set_caffe_param_mult(m, base_lr, base_weight_decay):
-    '''Function that allows us to assign a LR multiplier of 2 and a decay multiplier of 0 to the bias weights (which is common in Caffe)'''
+    '''Function that allows us to assign a LR multiplier of 2 and a decay \
+        multiplier of 0 to the bias weights (which is common in Caffe)'''
     param_list = []
     for name, params in m.named_parameters():
         if name.find('bias') != -1:
-            param_list.append({'params': params, 'lr': 2
-                               * base_lr, 'weight_decay': 0.0})
+            param_list.append({'params': params, 'lr': 2 *
+                               base_lr, 'weight_decay': 0.0})
         else:
             param_list.append({'params': params, 'lr': base_lr,
                                'weight_decay': base_weight_decay})
@@ -116,3 +117,18 @@ def saveTensorDepth(filename, tensor, scale):
     # img = Image.fromarray(img, mode="I")
     # print(img)
     # img.save(filename)
+
+
+def toDevice(obj, device):
+    if isinstance(obj, torch.Tensor):
+        return obj.to(device)
+    elif isinstance(obj, list) or isinstance(obj, tuple):
+        res = [toDevice(sub_obj, device) for sub_obj in obj]
+        if isinstance(obj, tuple):
+            return tuple(res)
+        else:
+            return res
+    elif isinstance(obj, dict):
+        return type(obj)([(k, toDevice(tensor, device)) for k, tensor in obj.items()])
+    else:
+        raise Exception("toDevice is missing specialization for this type ", type(obj))

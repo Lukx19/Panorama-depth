@@ -8,14 +8,7 @@ import torch.nn.functional as F
 # import torchvision.models as models
 
 from util import xavier_init
-from collections import namedtuple
-
-
-TensorScale = namedtuple('TensorScale', ['tensor', 'scale'])
-
-
-def anotate(tensor, scale):
-    return TensorScale(tensor, scale)
+from annotated_data import AnnotatedData, DataType
 
 
 # @inproceedings{cheng2018depth,
@@ -144,7 +137,8 @@ class CSPN(nn.Module):
 
 class RectNet(nn.Module):
 
-    def __init__(self, in_channels, cspn=False, reflection_pad=False):
+    def __init__(self, in_channels, cspn=False, reflection_pad=False,
+                 normal_est=False, segmentation_est=False):
         super(RectNet, self).__init__()
 
         # Network definition
@@ -216,13 +210,24 @@ class RectNet(nn.Module):
             self.guidance = ConvELUBlock(
                 64, 8, 3, padding=1, reflection_pad=reflection_pad)
             self.cspn = CSPN()
-        # Initialize the network weights
+
+        self.calc_normals = normal_est
+        if self.calc_normals:
+            self.normal_cov1 = ConvELUBlock(64, 16, 3, padding=1)
+            self.normal_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
+            self.normal_cov3 = nn.Conv2d(32, 3, 1)
+        self.calc_segmentation = segmentation_est
+        if self.calc_segmentation:
+            self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
+            self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
+            self.seg_cov3 = nn.Conv2d(32, 1, 1)
+            # Initialize the network weights
         self.apply(xavier_init)
 
-    def forward(self, *inputs):
-        x = inputs[0]
-        if len(inputs) > 1:
-            sparse_depth = inputs[1]
+    def forward(self, inputs):
+        x = inputs[DataType.Image]
+        if DataType.SparseDepth in inputs:
+            sparse_depth = inputs[DataType.SparseDepth][1]
             x = torch.cat((x, sparse_depth), 1)
         else:
             sparse_depth = None
@@ -300,10 +305,32 @@ class RectNet(nn.Module):
         else:
             opt_depth = pred_1x
 
-        return [opt_depth, pred_2x]
+        outputs = [opt_depth, pred_2x]
+        if self.calc_normals:
+            normal1 = self.normal_cov1(decoder1_2_out)
+            normal2 = self.normal_cov2(decoder1_2_out)
+            normal_cat = torch.cat((normal1, normal2), 1)
+            pred_normals = self.normal_cov3(normal_cat)
+            outputs.append(pred_normals)
+        if self.calc_segmentation:
+            seg1 = self.seg_cov1(decoder1_2_out)
+            seg2 = self.seg_cov2(decoder1_2_out)
+            seg_cat = torch.cat((seg1, seg2), 1)
+            pred_seg = self.seg_cov3(seg_cat)
+            outputs.append(pred_seg)
+        return outputs
 
-    def anotateOutput(self, outputs):
-        return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=2)]
+    def annotateOutput(self, outputs):
+        data = AnnotatedData()
+        data.add(outputs[0], DataType.Depth)
+        data.add(outputs[1], DataType.Depth, scale=2)
+        if self.calc_normals:
+            data.add(outputs[2], DataType.Normals)
+
+        if self.calc_segmentation:
+            data.add(outputs[3], DataType.PlanarSegmentation)
+
+        return data
 
 
 class RectNetCSPN(nn.Module):
@@ -359,10 +386,10 @@ class RectNetCSPN(nn.Module):
         # Initialize the network weights
         self.apply(xavier_init)
 
-    def forward(self, *inputs):
-        x = inputs[0]
-        if len(inputs) > 1:
-            sparse_depth = inputs[1]
+    def forward(self, inputs):
+        x = inputs[DataType.Image]
+        if DataType.SparseDepth in inputs:
+            sparse_depth = inputs[DataType.SparseDepth][1]
             x = torch.cat((x, sparse_depth), 1)
         else:
             sparse_depth = None
@@ -433,12 +460,16 @@ class RectNetCSPN(nn.Module):
         else:
             return [pred_1x, pred_2x]
 
-    def anotateOutput(self, outputs):
+    def annotateOutput(self, outputs):
+        data = AnnotatedData()
+        data.add(outputs[0], DataType.Depth)
+
         if self.cspn:
-            return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=1),
-                    anotate(outputs[2], scale=2)]
+            data.add(outputs[1], DataType.Depth, scale=1)
+            data.add(outputs[2], DataType.Depth, scale=2)
         else:
-            return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=2)]
+            data.add(outputs[1], DataType.Depth, scale=2)
+        return data
 # -----------------------------------------------------------------------------
 
 
@@ -519,10 +550,10 @@ class UResNet(nn.Module):
 
         self.apply(xavier_init)
 
-    def forward(self, *inputs):
-        x = inputs[0]
-        if len(inputs) > 1:
-            sparse_depth = inputs[1]
+    def forward(self, inputs):
+        x = inputs[DataType.Image]
+        if DataType.SparseDepth in inputs:
+            sparse_depth = inputs[DataType.SparseDepth][1]
             x = torch.cat((x, sparse_depth), 1)
         else:
             sparse_depth = None
@@ -559,11 +590,14 @@ class UResNet(nn.Module):
         x = self.decoder3_1(torch.cat((x, upsampled_pred_2x), 1))
         pred_1x = self.prediction2(x)
 
-        return [anotate(pred_1x, 1), anotate(pred_2x, 2), anotate(pred_4x, 4)]
+        return [pred_1x, pred_2x, pred_4x]
 
-    def anotateOutput(self, outputs):
-        return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=2),
-                anotate(outputs[2], scale=4)]
+    def annotateOutput(self, outputs):
+        data = AnnotatedData()
+        data.add(outputs[0], DataType.Depth)
+        data.add(outputs[1], DataType.Depth, scale=2)
+        data.add(outputs[2], DataType.Depth, scale=4)
+        return data
 
 
 class DoubleBranchNet(nn.Module):
@@ -637,13 +671,14 @@ class DoubleBranchNet(nn.Module):
 
         self.apply(xavier_init)
 
-    def forward(self, *inputs):
-        x = inputs[0]
-        if len(inputs) > 1:
-            pts1x = inputs[1]
-            pts2x = inputs[2]
-            pts4x = inputs[3]
+    def forward(self, inputs):
+        x = inputs[DataType.Image]
+        if DataType.SparseDepth in inputs:
+            pts1x = inputs[DataType.SparseDepth][1]
+            pts2x = inputs[DataType.SparseDepth][2]
+            pts4x = inputs[DataType.SparseDepth][3]
             x = torch.cat((x, pts1x), 1)
+
         # upsampled_pred_4x = F.interpolate(
         #     pred_4x.detach(), scale_factor=2, mode='bilinear')
         # First filter bank
@@ -712,9 +747,12 @@ class DoubleBranchNet(nn.Module):
         res_scale1x = conv1_out + bilin2_out
         return [res_scale1x, res_scale2x, res_scale4x]
 
-    def anotateOutput(self, outputs):
-        return [anotate(outputs[0], scale=1), anotate(outputs[1], scale=2),
-                anotate(outputs[2], scale=4)]
+    def annotateOutput(self, outputs):
+        data = AnnotatedData()
+        data.add(outputs[0], DataType.Depth)
+        data.add(outputs[1], DataType.Depth, scale=2)
+        data.add(outputs[2], DataType.Depth, scale=4)
+        return data
 
 # -----------------------------------------------------------------------------
 

@@ -4,12 +4,11 @@ import visdom
 from trainers import MonoTrainer
 import dataset
 from util import set_caffe_param_mult
-from run_utils import defineModelParameters, parseArgs, setupGPUDevices
+from run_utils import setupPipeline, parseArgs, setupGPUDevices
 
 import os.path as osp
 import os
 import json
-from test import test
 
 
 args = parseArgs(test=False)
@@ -26,7 +25,7 @@ validation_freq = 1
 visualization_freq = 5
 validation_sample_freq = -1
 
-model, criterion, parser, image_transformer, depth_transformer = defineModelParameters(
+model, criterion, parser, image_transformer, depth_transformer = setupPipeline(
     args.network_type, args.loss_type, args.add_points)
 
 network, criterion, device = setupGPUDevices(
@@ -42,7 +41,10 @@ train_dataloader = torch.utils.data.DataLoader(
         path_to_img_list=args.train_list,
         use_sparse_pts=args.add_points,
         transformer_depth=depth_transformer,
-        transformer_rgb=image_transformer),
+        transformer_rgb=image_transformer,
+        use_normals=args.load_normals,
+        use_planes=args.load_planes,
+    ),
     batch_size=args.batch_size,
     shuffle=True,
     num_workers=args.workers,
@@ -54,7 +56,10 @@ val_dataloader = torch.utils.data.DataLoader(
         path_to_img_list=args.val_list,
         use_sparse_pts=args.add_points,
         transformer_depth=depth_transformer,
-        transformer_rgb=image_transformer),
+        transformer_rgb=image_transformer,
+        use_normals=args.load_normals,
+        use_planes=args.load_planes,
+    ),
     batch_size=1,
     shuffle=False,
     num_workers=args.workers,
@@ -87,6 +92,6 @@ trainer = MonoTrainer(
     visualization_freq=visualization_freq,
     validation_sample_freq=validation_sample_freq)
 
-
+# trainer.setDryRun(True)
 trainer.train(args.checkpoint, args.only_weights)
 # test(experiment_name)

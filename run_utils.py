@@ -1,13 +1,13 @@
 import torch
 import torch.nn as nn
 from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
-from criteria import GradLoss, MultiScaleL2Loss
+from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss
 import argparse
 import dataset
 from trainers import parse_data, parse_data_sparse_depth
 
 
-def defineModelParameters(network_type, loss_type, add_points):
+def setupPipeline(network_type, loss_type, add_points):
     in_channels = 3
     parser = parse_data
     if add_points:
@@ -27,6 +27,8 @@ def defineModelParameters(network_type, loss_type, add_points):
         model = RectNet(in_channels, cspn=False)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
+    elif network_type == 'RectNetSegNormals':
+        model = RectNet(in_channels, cspn=False, normal_est=True, segmentation_est=True)
     elif network_type == 'RectNetPad':
         model = RectNet(in_channels, cspn=False, reflection_pad=True)
         alpha_list = [0.535, 0.272]
@@ -48,6 +50,8 @@ def defineModelParameters(network_type, loss_type, add_points):
             criterion = GradLoss()
         elif loss_type == "Revis_all":
             criterion = GradLoss(all_levels=True)
+        elif loss_type == "Revis_Normal_Seg":
+            criterion = NormSegLoss()
         else:
             assert False, 'Unsupported loss type'
     return model, criterion, parser, rgb_transformer, depth_transformer
@@ -63,12 +67,19 @@ def parseArgs(test=False):
                         help='Name of this experiment. Used to creat folder in checkpoint folder.')
 
     parser.add_argument('--network_type', default="RectNet", type=str,
-                        help='UResNet or RectNet or RectNetCSPN or UResNet_Resnet or RectNetPad or DBNet')
+                        help="UResNet or RectNet or RectNetCSPN \
+                            or UResNet_Resnet or RectNetPad or DBNet")
 
     parser.add_argument('--add_points', action="store_true", default=False,
                         help='In addition to monocular image also add sparse points to training.')
 
-    parser.add_argument('--dataset_dir', type=str, default="../datasets/",
+    parser.add_argument('--load_normals', action="store_true", default=False,
+                        help='Load normals from dataset')
+
+    parser.add_argument('--load_planes', action="store_true", default=False,
+                        help='Load planes from dataset')
+
+    parser.add_argument('--dataset_dir', type=str, default="../datasets/Omnidepth/",
                         help='Dataset storage folder')
 
     parser.add_argument('--gpu_ids', default='0,1', type=str,

@@ -171,7 +171,7 @@ def panoDepthToPcl(depth, rgb, scale=1):
 
             points.append([X, Y, Z])
             if rgb is not None:
-                colors.append(rgb[u, v])
+                colors.append(rgb[v, u])
             else:
                 colors.append([250, 250, 250])
     return [np.array(points), np.array(colors)]

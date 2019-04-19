@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
+from annotated_data import DataType
 
 
 class Sobel(nn.Module):
@@ -104,6 +105,21 @@ class L2Loss(nn.Module):
         return error.sum() / (mask > 0).sum().float()
 
 
+def createValidMean(mask):
+    valid_pixels = (mask > 0).sum().float()
+
+    def validMean(val):
+        return (mask * val).sum() / valid_pixels
+    return validMean
+
+
+def cosineLoss(pred_normal, gt_normal, mean_fce):
+    return mean_fce(
+        torch.abs(1 - F.cosine_similarity(pred_normal, gt_normal, dim=1, eps=1e-8)))
+
+#  ----------------------------------------------------------
+
+
 class MultiScaleL2Loss(nn.Module):
 
     def __init__(self, alpha_list, beta_list):
@@ -115,15 +131,14 @@ class MultiScaleL2Loss(nn.Module):
         self.alpha_list = alpha_list
         self.beta_list = beta_list
 
-    def forward(self, predictions, gt, mask_dict):
+    def forward(self, predictions, data):
 
         # Go through each scale and accumulate errors
         depth_error = 0
-        for i in range(len(predictions)):
+        for i, (scale, depth_pred) in enumerate(predictions.queryType(DataType.Depth)):
 
-            depth_pred, scale = predictions[i]
-            depth_gt = gt[scale]
-            mask = mask_dict[scale]
+            depth_gt = data.get(DataType.Depth, scale=scale)[0]
+            mask = data.get(DataType.Mask, scale=scale)[0]
             alpha = self.alpha_list[i]
             beta = self.beta_list[i]
 
@@ -148,24 +163,20 @@ class GradLoss(nn.Module):
         super(GradLoss, self).__init__()
         self.get_gradient = Sobel()
         self.l2_loss = L2Loss()
-        self.cos = nn.CosineSimilarity(dim=1, eps=0)
         self.all_levels = all_levels
 
-    def createValidMean(self, mask, valid_pixels):
-        def validMean(val):
-            return (mask * val).sum() / valid_pixels
-        return validMean
-
-    def forward(self, predictions, gt_dict, mask_dict):
+    def forward(self, predictions, data):
         total_loss = 0
-        for i in range(len(predictions)):
-            pred, scale = predictions[i]
-            gt = gt_dict[scale]
-            mask = mask_dict[scale]
+        for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
+
+            gt = data.get(DataType.Depth, scale=scale)[0]
+            mask = data.get(DataType.Mask, scale=scale)[0]
             b, _, w, h = pred.size()
             # print(scale, pred.size(), gt.size(), mask.size())
             if i == 0 or self.all_levels:
                 ones = pred.new_ones(b, 1, w, h)
+                # gt = torch.log(gt)
+                # pred = torch.log(pred)
                 depth_grad = self.get_gradient(gt)
                 output_grad = self.get_gradient(pred)
 
@@ -188,18 +199,41 @@ class GradLoss(nn.Module):
 
                 # depth_normal = F.normalize(depth_normal, p=2, dim=1)
                 # output_normal = F.normalize(output_normal, p=2, dim=1)
-                valid_pixels = (mask > 0).sum().float()
-                validMean = self.createValidMean(mask, valid_pixels)
+                validMean = createValidMean(mask)
 
-                loss_depth = validMean(torch.log(torch.abs(pred - gt) + 0.5))
+                loss_depth = validMean((torch.abs(pred - gt) + 0.5))
                 loss_dx = validMean(
-                    torch.log(torch.abs(output_grad_dx - depth_grad_dx) + 0.5))
+                    (torch.abs(output_grad_dx - depth_grad_dx) + 0.5))
                 loss_dy = validMean(
-                    torch.log(torch.abs(output_grad_dy - depth_grad_dy) + 0.5))
-                loss_normal = validMean(
-                    torch.abs(1 - self.cos(output_normal, depth_normal)))
+                    (torch.abs(output_grad_dy - depth_grad_dy) + 0.5))
+                loss_normal = cosineLoss(output_normal, depth_normal, validMean)
+                # print(loss_depth, loss_normal, loss_dx, loss_dy)
                 total_loss += loss_depth + loss_normal + (loss_dx + loss_dy)
             else:
                 total_loss += self.l2_loss(pred, gt, mask)
 
         return total_loss
+
+
+class NormSegLoss(nn.Module):
+    def __init__(self):
+        super(NormSegLoss, self).__init__()
+        self.depth_loss = GradLoss(all_levels=True)
+        # self.normal_loss =
+        self.segmentation_loss = nn.BCEWithLogitsLoss()
+
+    def forward(self, predictions, data):
+        depth_total_loss = self.depth_loss(predictions, data)
+
+        mask = data.get(DataType.Mask, scale=1)[0]
+        gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
+        pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
+
+        validMean = createValidMean(mask)
+
+        seg_total_loss = self.segmentation_loss(pred_seg, gt_seg)
+
+        gt_normals = data.get(DataType.Normals)[0] * mask
+        pred_normals = predictions.get(DataType.Normals)[0] * mask
+        normals_loss = cosineLoss(pred_normals, gt_normals, validMean)
+        return depth_total_loss + seg_total_loss + normals_loss

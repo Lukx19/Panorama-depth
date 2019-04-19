@@ -54,15 +54,16 @@ Save files one level above this git folder into folder datasets. The file struct
 
 ```
 - datasets
-    - Matterport
-        - 0_0151156dd8254b07a241a2ffaf0451d41_color_0_Left_Down_0.0.png
-        - ...
-    - Stanford
-        - area3
-            - 0_area_31_color_0_Left_Down_0.0.png
-        - ...
-    - SceneNet
-    - SunCG
+    -Omnidepth
+        - Matterport
+            - 0_0151156dd8254b07a241a2ffaf0451d41_color_0_Left_Down_0.0.png
+            - ...
+        - Stanford
+            - area3
+                - 0_area_31_color_0_Left_Down_0.0.png
+            - ...
+        - SceneNet
+        - SunCG
 - Panorama-depth
     - train.py
     - test.py
