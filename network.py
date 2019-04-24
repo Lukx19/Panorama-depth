@@ -311,6 +311,11 @@ class RectNet(nn.Module):
             normal2 = self.normal_cov2(decoder1_2_out)
             normal_cat = torch.cat((normal1, normal2), 1)
             pred_normals = self.normal_cov3(normal_cat)
+            # print(pred_normals.size())
+            norm = torch.norm(pred_normals, p=None, keepdim=True, dim=1)
+            # print(norm.size())
+            pred_normals = pred_normals / norm
+            # print(pred_normals.size())
             outputs.append(pred_normals)
         if self.calc_segmentation:
             seg1 = self.seg_cov1(decoder1_2_out)
@@ -676,7 +681,7 @@ class DoubleBranchNet(nn.Module):
         if DataType.SparseDepth in inputs:
             pts1x = inputs[DataType.SparseDepth][1]
             pts2x = inputs[DataType.SparseDepth][2]
-            pts4x = inputs[DataType.SparseDepth][3]
+            pts4x = inputs[DataType.SparseDepth][4]
             x = torch.cat((x, pts1x), 1)
 
         # upsampled_pred_4x = F.interpolate(
