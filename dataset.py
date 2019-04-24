@@ -14,6 +14,58 @@ from util import read_tiff
 from annotated_data import DataType
 
 
+def pad_tensor(tensor, pad, dim):
+    """
+    args:
+        tensor - tensor to pad
+        pad - the size to pad to
+        dim - dimension to pad
+
+    return:
+        a new tensor padded to 'pad' in dimension 'dim'
+    """
+    pad_size = list(tensor.shape)
+    pad_size[dim] = pad - tensor.size(dim)
+    return torch.cat([tensor, torch.zeros(*pad_size)], dim=dim)
+
+
+class PadCollate:
+    """
+    a variant of callate_fn that pads according to the biggest number of plane masks in
+    a batch of plane masks
+    """
+
+    def __init__(self, dim=1):
+        """
+        args:
+            dim - the dimension to be padded (dimension of time in sequences)
+        """
+        self.dim = dim
+
+    def pad_collate(self, batch):
+        """
+        args:
+            batch - list of (tensor, label)
+
+        reutrn:
+            xs - a tensor of all examples in 'batch' after padding
+            ys - a LongTensor of all labels in batch
+        """
+        print(batch[0], batch[1])
+        # find the biggest number of planes
+        max_len = max(map(lambda x: x[0].shape[self.dim], batch))
+        # pad according to max_len
+        batch = map(lambda x, y:
+                    (pad_tensor(x, pad=max_len, dim=self.dim), y), batch)
+        # stack all
+        xs = torch.stack(map(lambda x: x[0], batch), dim=0)
+        ys = torch.LongTensor(map(lambda x: x[1], batch))
+        return xs, ys
+
+    def __call__(self, batch):
+        return self.pad_collate(batch)
+
+
 class ToTensor(object):
     """Convert a ``PIL.Image`` or ``numpy.ndarray`` to tensor.
     Converts a PIL.Image or numpy.ndarray (H x W x C) in the range
@@ -134,9 +186,9 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
         if self.use_planes:
             plane_seg = ToTensor()(self.readPlanarSegmentation(seg_fname))
-            # plane_instances = ToTensor()(self.readPlanarInstances(seg_fname))
+            plane_instances = ToTensor(scale=False)(self.readPlanarInstances(seg_fname))
             data[DataType.PlanarSegmentation] = plane_seg
-            # data[DataType.Planes] = plane_instances
+            data[DataType.Planes] = plane_instances
 
         data[DataType.Image] = rgb
         data[DataType.Depth] = depth
@@ -167,16 +219,31 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
             return np.reshape(is_planar, (*is_planar.shape, 1))
         else:
-            raise Exception("File missing", path)
+            raise ValueError("File missing", path)
 
     def readPlanarInstances(self, path):
         if osp.exists(path):
-            planes = read_tiff(path)
-            h, w, ch = planes.shape
-            if ch == 1:
-                return np.array()
+            max_planes = 15
+            # first plane are non planar pixels
+            planes = read_tiff(path)[:, :, 1:]
+            if len(planes.shape) == 2:
+                print(path)
+                h, w = planes.shape
+                return np.zeros((h, w, max_planes))
 
-            planes = planes[:, :, 1:]
-            return np.reshape(planes, (h, w, ch - 1))
+            h, w, ch = planes.shape
+            perm = np.argsort(np.sum(planes, axis=(0, 1)))
+            perm = np.flip(perm)
+            planes = planes[:, :, perm]
+            # use only dominant 15 planes for now. We can increase it later
+            if ch < max_planes:
+                print(planes.shape, path)
+                if ch == 1:
+                    planes = np.zeros((h, w, 1))
+                planes = np.concatenate([planes, np.zeros((h, w, max_planes - ch))], axis=2)
+            planes2 = planes[:, :, 0:max_planes]
+            # print(np.sum(planes2, axis=(0, 1)), planes2.shape)
+
+            return planes2
         else:
-            raise Exception("File missing", path)
+            raise ValueError("File missing", path)

@@ -1,10 +1,12 @@
 import torch
 import torch.nn as nn
 from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
-from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss
+from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss, PlaneNormSegLoss
 import argparse
 import dataset
 from trainers import parse_data, parse_data_sparse_depth
+torch.backends.cudnn.enabled = True
+torch.backends.cudnn.benchmark = True
 
 
 def setupPipeline(network_type, loss_type, add_points):
@@ -52,6 +54,8 @@ def setupPipeline(network_type, loss_type, add_points):
             criterion = GradLoss(all_levels=True)
         elif loss_type == "Revis_Normal_Seg":
             criterion = NormSegLoss()
+        elif loss_type == "PlaneNormSegLoss":
+            criterion = PlaneNormSegLoss()
         else:
             assert False, 'Unsupported loss type'
     return model, criterion, parser, rgb_transformer, depth_transformer
@@ -114,7 +118,7 @@ def parseArgs(test=False):
                             epoch information is not restored.')
 
         parser.add_argument('--loss_type', default="Revis", type=str,
-                            help='MultiScale or Revis')
+                            help='MultiScale or Revis or PlaneNormSegLoss')
 
         parser.add_argument('--batch_size', default=8,
                             type=int, help='Batch size')
@@ -130,6 +134,10 @@ def parseArgs(test=False):
 def setupGPUDevices(gpus_list, model, criterion=None):
     device_ids = [int(s) for s in gpus_list.split(',')]
     print(device_ids)
+    print('cuda version=', torch.version.cuda)
+    print('cudnn version=', torch.backends.cudnn.version())
+    print("cudnn enables=", torch.backends.cudnn.enabled)
+    print("cudnn benchmark=", torch.backends.cudnn.benchmark)
     if device_ids == "cpu":
         device = torch.device("cpu")
         network = model.float().to(device)

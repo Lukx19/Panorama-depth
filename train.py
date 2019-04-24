@@ -22,7 +22,7 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 5
+visualization_freq = 100
 validation_sample_freq = -1
 
 model, criterion, parser, image_transformer, depth_transformer = setupPipeline(
@@ -47,6 +47,7 @@ train_dataloader = torch.utils.data.DataLoader(
     ),
     batch_size=args.batch_size,
     shuffle=True,
+    pin_memory=True,
     num_workers=args.workers,
     drop_last=True)
 
@@ -62,6 +63,7 @@ val_dataloader = torch.utils.data.DataLoader(
     ),
     batch_size=1,
     shuffle=False,
+    pin_memory=True,
     num_workers=args.workers,
     drop_last=False)
 

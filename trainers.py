@@ -15,7 +15,8 @@ import torchvision.transforms as Tt
 from torchvision.utils import make_grid
 
 from annotated_data import AnnotatedData, DataType
-
+import colorsys
+import numpy as np
 
 # From https://github.com/fyu/drn
 
@@ -51,6 +52,26 @@ class AverageMeter(object):
         self.avg = meter_dict['avg']
 
 
+def resetAverageMeters(average_meters):
+    for key, val in average_meters.items():
+        val.reset()
+
+
+def loadAverageMeters(average_meters):
+    loaded_meters = {}
+    for key, val in average_meters.items():
+        loaded_meters[key] = AverageMeter()
+        loaded_meters.from_dict(val)
+    return loaded_meters
+
+
+def serializeAverageMeters(average_meters):
+    final_dict = {}
+    for key, val in average_meters.items():
+        final_dict[key] = val.to_dict()
+    return final_dict
+
+
 def visualize_rgb(rgb):
     # Scale back to [0,255]
     return (255 * rgb).byte()
@@ -60,6 +81,28 @@ def visualize_mask(mask):
     '''Visualize the data mask'''
     mask /= mask.max()
     return (255 * mask).byte()
+
+
+def visualizePlanes(planes):
+    p, h, w = planes.size()
+    HSV_tuples = [(i / 360.0,
+                   np.random.uniform(0.8, 0.9),
+                   np.random.uniform(0.7, 0.8))
+                  for i in np.arange(0, 360.0, 360.0 / p)]
+    RGB_tuples = list(map(lambda x: colorsys.hls_to_rgb(*x), HSV_tuples))
+
+    R = torch.zeros((1, h, w))
+    G = torch.zeros((1, h, w))
+    B = torch.zeros((1, h, w))
+
+    for i, (r, g, b) in enumerate(RGB_tuples):
+        R += planes[i] * r
+        G += planes[i] * g
+        B += planes[i] * b
+
+    img = torch.cat((R, G, B), dim=0)
+    img[img == 0] = 1
+    return img
 
 
 def visualizeChannels(tensor):
@@ -162,6 +205,21 @@ def save_saples_for_pcl(data, outputs, results_dir):
         # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
 
 
+def totalLoss(loss):
+    total_loss = 0
+    if isinstance(loss, dict):
+        for key, val in loss.items():
+            total_loss += val
+    elif isinstance(loss, list):
+        for val in loss.items():
+            total_loss += val
+    elif isinstance(loss, torch.Tensor):
+        total_loss = loss
+    else:
+        raise ValueError("Unsupoted loss type: ", type(loss))
+    return total_loss
+
+
 class MonoTrainer(object):
 
     def __init__(
@@ -176,6 +234,7 @@ class MonoTrainer(object):
             device,
             parse_fce=parse_data,
             save_samples_fce=save_samples_default,
+            sum_losses_fce=totalLoss,
             visdom=None,
             scheduler=None,
             num_epochs=20,
@@ -188,6 +247,7 @@ class MonoTrainer(object):
         self.name = name
         self.parse_data = parse_fce
         self.save_samples = save_samples_fce
+        self.sumLosses = sum_losses_fce
 
         # Class instances
         self.network = network
@@ -211,6 +271,8 @@ class MonoTrainer(object):
         self.batch_time_meter = AverageMeter()
         self.forward_time_meter = AverageMeter()
         self.backward_time_meter = AverageMeter()
+        self.data_prep_time_meter = AverageMeter()
+        self.loss_time_meter = AverageMeter()
 
         # Some trackers
         self.epoch = 0
@@ -235,7 +297,9 @@ class MonoTrainer(object):
         self.vis = visdom
 
         # Loss trackers
-        self.loss_meter = AverageMeter()
+        self.loss_meters = {
+            "total": AverageMeter()
+        }
         self.dry_run = False
 
     def setDryRun(self, state):
@@ -272,39 +336,59 @@ class MonoTrainer(object):
         loss.backward()
         self.optimizer.step()
 
+    def updateLossMeters(self, raw_loss, total_loss):
+        self.loss_meters["total"].update(total_loss)
+        if isinstance(raw_loss, dict):
+            for key, val in raw_loss.items():
+                if key not in self.loss_meters:
+                    self.loss_meters[key] = AverageMeter()
+                self.loss_meters[key].update(val)
+
     def train_one_epoch(self):
 
         # Put the model in train mode
         self.network = self.network.train()
-        self.loss_meter.reset()
+        resetAverageMeters(self.loss_meters)
         # Load data
         end = time.time()
         for batch_num, raw_data in enumerate(self.train_dataloader):
-
             # Parse the data into inputs, ground truth, and other
+            # torch.cuda.synchronize()
+            data_prep_time = time.time()
             inputs, data = self.parse_data(raw_data)
             inputs = toDevice(inputs, self.device)
             data = data.to(self.device)
+            # torch.cuda.synchronize()
+            self.data_prep_time_meter.update(time.time() - data_prep_time)
             # print(data.get(DataType.Normals, scale=1)[0].size())
             if self.dry_run:
                 continue
             # Run a forward pass
+            # torch.cuda.synchronize()
             forward_time = time.time()
             output = self.annotate_outputs(self.forward_pass(inputs))
+            # torch.cuda.synchronize()
             self.forward_time_meter.update(time.time() - forward_time)
 
+            # torch.cuda.synchronize()
+            loss_time = time.time()
             # Compute the loss(es)
-            loss = self.compute_loss(output, data)
+            raw_loss = self.compute_loss(output, data)
+            loss = self.sumLosses(raw_loss)
+            # torch.cuda.synchronize()
+            self.loss_time_meter.update(time.time() - loss_time)
 
             # Backpropagation of the total loss
+            # torch.cuda.synchronize()
             backward_time = time.time()
             self.backward_pass(loss)
+            # torch.cuda.synchronize()
             self.backward_time_meter.update(time.time() - backward_time)
 
             # Update batch times
             self.batch_time_meter.update(time.time() - end)
             end = time.time()
-            self.loss_meter.update(loss)
+            self.updateLossMeters(raw_loss, loss)
 
             if batch_num % self.batch_checkoint_freq == 0:
                 self.save_checkpoint()
@@ -312,13 +396,12 @@ class MonoTrainer(object):
             if batch_num % self.visualization_freq == 0:
 
                 # Visualize the loss
-                self.visualize_loss(batch_num, self.loss_meter.avg)
+                self.visualize_loss(batch_num, self.loss_meters)
                 self.visualize_samples(data, output)
 
                 # Print the most recent batch report
                 self.print_batch_report(batch_num)
-                self.loss_meter.reset()
-                # self.validate()
+                resetAverageMeters(self.loss_meters)
 
     def validate(self, checkpoint_path=None, save_all_predictions=False):
         print('Validating model....')
@@ -453,7 +536,11 @@ class MonoTrainer(object):
                 experiment_name = checkpoint['experiment']
                 self.vis[1] = experiment_name
                 self.best_d1_inlier = checkpoint['best_d1_inlier']
-                self.loss_meter.from_dict(checkpoint['loss_meter'])
+                if "loss_meter" in checkpoint:
+                    self.loss_meters["total"].from_dict(checkpoint["loss_meter"])
+                if "loss_meters" in checkpoint:
+                    self.loss_meters = loadAverageMeters(checkpoint["loss_meters"])
+
             else:
                 print('NOTE: Loading weights only')
 
@@ -476,19 +563,8 @@ class MonoTrainer(object):
         '''
         Initializes visualizations
         '''
-
-        self.vis[0].line(
-            env=self.vis[1],
-            X=torch.zeros(1, 1).long(),
-            Y=torch.zeros(1, 1).float(),
-            win='losses',
-            opts=dict(
-                title='Loss Plot',
-                markers=False,
-                xlabel='Iteration',
-                ylabel='Loss',
-                legend=['Total Loss']))
-
+        # if self.vis[1] == self.vis[0].get_env_list():
+        self.vis[0].delete_env(self.vis[1])
         self.vis[0].line(
             env=self.vis[1],
             X=torch.zeros(1, 4).long(),
@@ -513,19 +589,33 @@ class MonoTrainer(object):
                 ylabel='Percent',
                 legend=['d1', 'd2', 'd3']))
 
-    def visualize_loss(self, batch_num, loss):
+    def visualize_loss(self, batch_num, loss_meters):
         '''
         Updates the loss visualization
         '''
         total_num_batches = self.epoch * len(self.train_dataloader) + batch_num
-        self.vis[0].line(
-            env=self.vis[1],
-            X=torch.tensor([total_num_batches]),
-            Y=torch.tensor([loss]),
-            win='losses',
-            update='append',
-            opts=dict(
-                legend=['Total Loss']))
+        for key, loss_meter in loss_meters.items():
+            if not self.vis[0].win_exists(key, env=self.vis[1]):
+                self.vis[0].line(
+                    env=self.vis[1],
+                    X=torch.zeros(1, 1).long(),
+                    Y=torch.zeros(1, 1).float(),
+                    win=key,
+                    opts=dict(
+                        title=key + ' Plot',
+                        markers=False,
+                        xlabel='Iteration',
+                        ylabel='Loss',
+                        legend=[key]))
+            else:
+                self.vis[0].line(
+                    env=self.vis[1],
+                    X=torch.tensor([total_num_batches]),
+                    Y=torch.tensor([loss_meter.avg]),
+                    win=key,
+                    update='append',
+                    opts=dict(
+                        legend=[key]))
 
     def visualize_samples(self, data, output):
         '''
@@ -564,7 +654,9 @@ class MonoTrainer(object):
                 title='Depth Prediction',
                 caption='Depth Prediction',
                 xmax=max_depth,
-                xmin=gt_depth.min().item()))
+                xmin=gt_depth.min().item(),
+                width=512,
+                height=256))
 
         self.vis[0].heatmap(
             gt_depth.squeeze().flip(0),
@@ -573,28 +665,34 @@ class MonoTrainer(object):
             opts=dict(
                 title='Depth GT',
                 caption='Depth GT',
-                xmax=max_depth))
+                xmax=max_depth,
+                width=512,
+                height=256))
         pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
         gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
         if len(pred_seg) > 0 and len(gt_seg) > 0:
             pred_seg = torch.sigmoid(pred_seg[0][0]).cpu()
             gt_seg = gt_seg[0][0].cpu()
             self.vis[0].heatmap(
-                pred_seg.squeeze().flip(0),
+                gt_seg.squeeze().flip(0),
                 env=self.vis[1],
                 win='planar_seg_gt',
                 opts=dict(
                     title='Plannar vs Non-Plannar GT',
                     caption='Plannar vs Non-Plannar GT',
-                    xmax=1))
+                    xmax=1,
+                    width=512,
+                    height=256))
             self.vis[0].heatmap(
-                gt_seg.squeeze().flip(0),
+                pred_seg.squeeze().flip(0),
                 env=self.vis[1],
                 win='planar_seg_pred',
                 opts=dict(
                     title='Plannar vs Non-Plannar Prediction',
                     caption='Plannar vs Non-Plannar Prediction',
-                    xmax=1))
+                    xmax=1,
+                    width=512,
+                    height=256))
 
         pred_normals = output.get(DataType.Normals, scale=1)
         gt_normals = data.get(DataType.Normals, scale=1)
@@ -607,14 +705,30 @@ class MonoTrainer(object):
                 win='normals_gt',
                 opts=dict(
                     title='Normals GT',
-                    caption='Normals GT'))
+                    caption='Normals GT',
+                    width=512,
+                    height=768))
             self.vis[0].heatmap(
                 visualizeChannels(pred_normals).squeeze(),
                 env=self.vis[1],
                 win='normals_pred',
                 opts=dict(
                     title='Normals Prediction',
-                    caption='Normals Prediction'))
+                    caption='Normals Prediction',
+                    width=512,
+                    height=768))
+        planes = data.get(DataType.Planes)
+        if len(planes) > 0:
+            planes_data = planes[0][0].cpu()
+            planes_data = visualizePlanes(planes_data).squeeze().flip(0)
+            print(planes_data.size())
+            self.vis[0].image(
+                planes_data,
+                env=self.vis[1],
+                win='planes',
+                opts=dict(
+                    title='Planes GT',
+                    caption='Planes GT'))
 
     def visualize_metrics(self):
         '''
@@ -658,7 +772,9 @@ class MonoTrainer(object):
         '''
         print('Epoch: [{0}][{1}/{2}]\t'
               'Batch Time {batch_time.val:.3f} ({batch_time.avg:.3f})\n'
-              'Forward Time {forward_time.val:.3f} ({forward_time.avg:.3f})\t'
+              'Data prep Time {data_prep_time.val:.3f} ({data_prep_time.avg:.3f})\t'
+              'Forward Time {forward_time.val:.3f} ({forward_time.avg:.3f})\n'
+              'Loss Time {loss_time.val:.3f} ({loss_time.avg:.3f})\t'
               'Backward Time {backward_time.val:.3f} ({backward_time.avg:.3f})\n'
               'Loss {loss.val:.4f} ({loss.avg:.4f})\n\n'.format(
                   self.epoch + 1,
@@ -667,7 +783,9 @@ class MonoTrainer(object):
                   batch_time=self.batch_time_meter,
                   forward_time=self.forward_time_meter,
                   backward_time=self.backward_time_meter,
-                  loss=self.loss_meter))
+                  data_prep_time=self.data_prep_time_meter,
+                  loss_time=self.loss_time_meter,
+                  loss=self.loss_meters["total"]))
 
     def print_validation_report(self):
         '''
@@ -713,7 +831,7 @@ class MonoTrainer(object):
                 'experiment': self.name,
                 'state_dict': self.network.state_dict(),
                 'optimizer': self.optimizer.state_dict(),
-                'loss_meter': self.loss_meter.to_dict(),
+                'loss_meters': serializeAverageMeters(self.loss_meters),
                 'best_d1_inlier': self.best_d1_inlier
             },
             self.is_best,
