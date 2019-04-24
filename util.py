@@ -132,3 +132,12 @@ def toDevice(obj, device):
         return type(obj)([(k, toDevice(tensor, device)) for k, tensor in obj.items()])
     else:
         raise Exception("toDevice is missing specialization for this type ", type(obj))
+
+
+def uncolapseMask(tensor):
+    '''
+    Takes in Bx1xHxW tensor with integers representing individual classes.
+    Returns list of tensors 1xCxHxW where C is number of binary masks represented
+    by indeces in original tensor
+    '''
+    pass

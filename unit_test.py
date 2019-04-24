@@ -6,7 +6,25 @@ import glob
 import numpy as np
 from criteria import Depth2Points
 from visualizations import savePcl
-from util import read_tiff
+from util import read_tiff, uncolapseMask
+import unittest
+
+
+class TestUtilMethods(unittest.TestCase):
+
+    def testMaskColapsing(self):
+        mask = np.array([[[0, 1], [2, 2], [3, 4]], [[1], [1]]])
+        mask = torch.from_numpy(mask)
+        res = uncolapseMask(mask)
+        self.assertEqual(len(res), 2)
+        self.assertEqual(res[0].size(), (1, 5, 3, 2))
+        self.assertEqual(res[1].size(), (1, 1, 1, 1))
+        res0 = res[0][0].numpy()
+        self.assertEqual(res0[0], np.array([[1, 0], [0, 0], [0, 0]]))
+        self.assertEqual(res0[1], np.array([[0, 1], [0, 0], [0, 0]]))
+        self.assertEqual(res0[2], np.array([[0, 0], [1, 1], [0, 0]]))
+        self.assertEqual(res0[4], np.array([[0, 0], [0, 0], [1, 0]]))
+        self.assertEqual(res0[5], np.array([[0, 0], [0, 0], [0, 1]]))
 
 
 def testPanoToPointsConversion():
@@ -48,4 +66,5 @@ def testPanoToPointsConversion():
 
 
 if __name__ == "__main__":
-    testPanoToPointsConversion()
+    unittest.main()
+    # testPanoToPointsConversion()
