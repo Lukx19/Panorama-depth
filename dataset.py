@@ -223,7 +223,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
     def readPlanarInstances(self, path):
         if osp.exists(path):
-            max_planes = 15
+            max_planes = 30
             # first plane are non planar pixels
             planes = read_tiff(path)[:, :, 1:]
             if len(planes.shape) == 2:
@@ -237,7 +237,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
             planes = planes[:, :, perm]
             # use only dominant 15 planes for now. We can increase it later
             if ch < max_planes:
-                print(planes.shape, path)
+                # print(planes.shape, path)
                 if ch == 1:
                     planes = np.zeros((h, w, 1))
                 planes = np.concatenate([planes, np.zeros((h, w, max_planes - ch))], axis=2)

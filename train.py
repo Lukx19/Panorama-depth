@@ -22,10 +22,10 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 100
+visualization_freq = 10
 validation_sample_freq = -1
 
-model, criterion, parser, image_transformer, depth_transformer = setupPipeline(
+model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(
     args.network_type, args.loss_type, args.add_points)
 
 network, criterion, device = setupGPUDevices(
@@ -87,6 +87,7 @@ trainer = MonoTrainer(
     checkpoint_dir,
     device,
     parse_fce=parser,
+    sum_losses_fce=loss_sum_fce,
     visdom=[vis, env],
     scheduler=scheduler,
     num_epochs=args.epochs,

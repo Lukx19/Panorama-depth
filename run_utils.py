@@ -4,7 +4,7 @@ from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
 from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss, PlaneNormSegLoss
 import argparse
 import dataset
-from trainers import parse_data, parse_data_sparse_depth
+from trainers import parse_data, parse_data_sparse_depth, genTotalLoss
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 
@@ -45,6 +45,7 @@ def setupPipeline(network_type, loss_type, add_points):
         assert False, 'Unsupported network type'
 
     criterion = None
+    mul_factors = {}
     if loss_type is not None:
         if loss_type == "MultiScale":
             criterion = MultiScaleL2Loss(alpha_list, beta_list)
@@ -56,9 +57,12 @@ def setupPipeline(network_type, loss_type, add_points):
             criterion = NormSegLoss()
         elif loss_type == "PlaneNormSegLoss":
             criterion = PlaneNormSegLoss()
+            # mul_factors["Distance_Pred_Plane_Loss"] = 3.0
+            # mul_factors["Plane_Distance_Loss"] = 3.0
+            # mul_factors["Planar_Cosine_Loss"] = 3.0
         else:
             assert False, 'Unsupported loss type'
-    return model, criterion, parser, rgb_transformer, depth_transformer
+    return model, (criterion, genTotalLoss(mul_factors)), parser, rgb_transformer, depth_transformer
 
 
 def parseArgs(test=False):

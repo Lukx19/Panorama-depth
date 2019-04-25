@@ -17,6 +17,7 @@ from torchvision.utils import make_grid
 from annotated_data import AnnotatedData, DataType
 import colorsys
 import numpy as np
+import json
 
 # From https://github.com/fyu/drn
 
@@ -61,7 +62,7 @@ def loadAverageMeters(average_meters):
     loaded_meters = {}
     for key, val in average_meters.items():
         loaded_meters[key] = AverageMeter()
-        loaded_meters.from_dict(val)
+        loaded_meters[key].from_dict(val)
     return loaded_meters
 
 
@@ -205,19 +206,27 @@ def save_saples_for_pcl(data, outputs, results_dir):
         # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
 
 
-def totalLoss(loss):
-    total_loss = 0
-    if isinstance(loss, dict):
-        for key, val in loss.items():
-            total_loss += val
-    elif isinstance(loss, list):
-        for val in loss.items():
-            total_loss += val
-    elif isinstance(loss, torch.Tensor):
-        total_loss = loss
-    else:
-        raise ValueError("Unsupoted loss type: ", type(loss))
-    return total_loss
+def genTotalLoss(factors={}):
+    def totalLoss(loss):
+        for key, factor in factors.items():
+            if key in loss:
+                loss[key] *= factor
+            else:
+                print("multiplyTotalLoss: missing loss: ", key, "should be multiplied by ", factor)
+
+        total_loss = 0
+        if isinstance(loss, dict):
+            for key, val in loss.items():
+                total_loss += val
+        elif isinstance(loss, list):
+            for val in loss.items():
+                total_loss += val
+        elif isinstance(loss, torch.Tensor):
+            total_loss = loss
+        else:
+            raise ValueError("Unsupoted loss type: ", type(loss))
+        return total_loss
+    return totalLoss
 
 
 class MonoTrainer(object):
@@ -234,7 +243,7 @@ class MonoTrainer(object):
             device,
             parse_fce=parse_data,
             save_samples_fce=save_samples_default,
-            sum_losses_fce=totalLoss,
+            sum_losses_fce=None,
             visdom=None,
             scheduler=None,
             num_epochs=20,
@@ -247,7 +256,10 @@ class MonoTrainer(object):
         self.name = name
         self.parse_data = parse_fce
         self.save_samples = save_samples_fce
-        self.sumLosses = sum_losses_fce
+        if sum_losses_fce is None:
+            self.sumLosses = genTotalLoss()
+        else:
+            self.sumLosses = sum_losses_fce
 
         # Class instances
         self.network = network
@@ -394,7 +406,10 @@ class MonoTrainer(object):
                 self.save_checkpoint()
             # Every few batches
             if batch_num % self.visualization_freq == 0:
-
+                dict_loss = {}
+                for key, tensor in raw_loss.items():
+                    dict_loss[key] = tensor.item()
+                print(json.dumps(dict_loss, indent=4, sort_keys=True))
                 # Visualize the loss
                 self.visualize_loss(batch_num, self.loss_meters)
                 self.visualize_samples(data, output)
@@ -452,8 +467,8 @@ class MonoTrainer(object):
         # Load pretrained parameters if desired
         if checkpoint_path is not None:
             self.load_checkpoint(checkpoint_path, weights_only)
-            if weights_only:
-                self.initialize_visualizations()
+            # if weights_only:
+            self.initialize_visualizations()
         else:
             # Initialize any training visualizations
             self.initialize_visualizations()
@@ -700,7 +715,7 @@ class MonoTrainer(object):
             pred_normals = pred_normals[0][0].cpu()
             gt_normals = gt_normals[0][0].cpu()
             self.vis[0].heatmap(
-                visualizeChannels(gt_normals).squeeze(),
+                visualizeChannels(gt_normals).squeeze().flip(0),
                 env=self.vis[1],
                 win='normals_gt',
                 opts=dict(
@@ -709,7 +724,7 @@ class MonoTrainer(object):
                     width=512,
                     height=768))
             self.vis[0].heatmap(
-                visualizeChannels(pred_normals).squeeze(),
+                visualizeChannels(pred_normals).squeeze().flip(0),
                 env=self.vis[1],
                 win='normals_pred',
                 opts=dict(
