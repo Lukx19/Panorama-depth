@@ -13,6 +13,7 @@ class DataType(Enum):
     SparseDepth = 5
     Planes = 6
     Mask = 7
+    PlaneParams = 8
 
 
 class AnnotatedData:

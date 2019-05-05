@@ -5,12 +5,15 @@ import time
 import math
 import shutil
 import os.path as osp
+import os
 
 import util
 from metrics import (abs_rel_error, delta_inlier_ratio,
                      lin_rms_sq_error, log_rms_sq_error, sq_rel_error)
 
-from util import saveTensorDepth, toDevice
+from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
+                  stackVerticaly, heatmapGrid)
+from network import toPlaneParams
 import torchvision.transforms as Tt
 from torchvision.utils import make_grid
 
@@ -18,6 +21,7 @@ from annotated_data import AnnotatedData, DataType
 import colorsys
 import numpy as np
 import json
+import plotly as py
 
 # From https://github.com/fyu/drn
 
@@ -106,13 +110,6 @@ def visualizePlanes(planes):
     return img
 
 
-def visualizeChannels(tensor):
-    '''Stack channels vertically'''
-    ch, h, w = tensor.size()
-    tensor = tensor.reshape((1, -1, w))
-    return tensor
-
-
 def parse_data(raw_data):
     '''
         Data must be instace of AnnotatationData
@@ -160,6 +157,8 @@ def parse_data_sparse_depth(raw_data):
     sparse_scales = {1: sparse_depth_1x, 2: sparse_depth_2x, 4: sparse_depth_4x}
 
     inputs[DataType.SparseDepth] = sparse_scales
+    inputs[DataType.Planes] = data.get(DataType.Planes, scale=1)
+
     data.add(sparse_depth_1x, DataType.SparseDepth, scale=1)
     data.add(sparse_depth_2x, DataType.SparseDepth, scale=2)
     data.add(sparse_depth_4x, DataType.SparseDepth, scale=4)
@@ -385,7 +384,7 @@ class MonoTrainer(object):
             # torch.cuda.synchronize()
             loss_time = time.time()
             # Compute the loss(es)
-            raw_loss = self.compute_loss(output, data)
+            raw_loss, histograms = self.compute_loss(output, data)
             loss = self.sumLosses(raw_loss)
             # torch.cuda.synchronize()
             self.loss_time_meter.update(time.time() - loss_time)
@@ -412,7 +411,7 @@ class MonoTrainer(object):
                 print(json.dumps(dict_loss, indent=4, sort_keys=True))
                 # Visualize the loss
                 self.visualize_loss(batch_num, self.loss_meters)
-                self.visualize_samples(data, output)
+                self.visualize_samples(data, output, histograms)
 
                 # Print the most recent batch report
                 self.print_batch_report(batch_num)
@@ -546,7 +545,9 @@ class MonoTrainer(object):
             checkpoint = torch.load(checkpoint_path)
 
             # If we want to continue training where we left off, load entire training state
-            if not weights_only:
+            if weights_only:
+                print('NOTE: Loading weights only')
+            else:
                 self.epoch = checkpoint['epoch']
                 experiment_name = checkpoint['experiment']
                 self.vis[1] = experiment_name
@@ -555,16 +556,13 @@ class MonoTrainer(object):
                     self.loss_meters["total"].from_dict(checkpoint["loss_meter"])
                 if "loss_meters" in checkpoint:
                     self.loss_meters = loadAverageMeters(checkpoint["loss_meters"])
-
-            else:
-                print('NOTE: Loading weights only')
-
-            # Load the optimizer and model state
-            if not eval_mode:
-                util.load_optimizer(
-                    self.optimizer,
-                    checkpoint['optimizer'],
-                    self.device)
+                # Load the optimizer
+                if not eval_mode:
+                    util.load_optimizer(
+                        self.optimizer,
+                        checkpoint['optimizer'],
+                        self.device)
+            # Load model
             util.load_partial_model(
                 self.network,
                 checkpoint['state_dict'])
@@ -573,6 +571,33 @@ class MonoTrainer(object):
                 checkpoint_path, checkpoint['epoch']))
         else:
             print('WARNING: No checkpoint found')
+
+    def visualizeNetwork(self, checkpoint_path=None):
+        if checkpoint_path is not None:
+            self.load_checkpoint(
+                checkpoint_path, weights_only=True, eval_mode=False)
+        for batch_num, raw_data in enumerate(self.train_dataloader):
+            if batch_num > 1:
+                return
+            inputs, data = self.parse_data(raw_data)
+            inputs = toDevice(inputs, self.device)
+            data = data.to(self.device)
+
+            output = self.annotate_outputs(self.forward_pass(inputs))
+
+            raw_loss = self.compute_loss(output, data)
+            loss = self.sumLosses(raw_loss)
+
+            graph_dot = register_hooks(loss)
+            self.backward_pass(loss)
+
+            plot_grad_flow(self.network.named_parameters(),
+                           osp.join(self.checkpoint_dir, "gradient.png"))
+
+            dot = graph_dot()
+            # dot.format = 'svg'
+            # dot.render('graph.svg', self.checkpoint_dir)
+            dot.save('graph.dot', self.checkpoint_dir)
 
     def initialize_visualizations(self):
         '''
@@ -632,15 +657,31 @@ class MonoTrainer(object):
                     opts=dict(
                         legend=[key]))
 
-    def visualize_samples(self, data, output):
+    def visualize_samples(self, data, output, loss_hist, save_to_disk=True):
         '''
         Updates the output samples visualization
         '''
-        rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu()
-        depth_pred = output.get(DataType.Depth, scale=1)[0][0].cpu()
+        data_folder = osp.join(self.checkpoint_dir, "visdom")
+        os.makedirs(data_folder, exist_ok=True)
+        self.vis[0].save([self.vis[1]])
+        rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
+        depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
+        pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
+        pred_depth *= depth_mask
+        pred_depth = pred_depth.squeeze().flip(0).numpy()
 
-        gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu()
-        depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu()
+        gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu().detach()
+        gt_depth *= depth_mask
+        gt_depth = gt_depth.squeeze().flip(0).numpy()
+
+        for key, hist in loss_hist.items():
+            max_val = torch.max(hist[0]).item()
+            if max_val > 8:
+                max_val = 8.0
+            graph = imageHeatmap(rgb, hist[0].cpu().flip(0), title=key, max_val=max_val)
+            if save_to_disk:
+                py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
+            self.vis[0].plotlyplot(graph, win=key, env=self.vis[1])
 
         self.vis[0].image(
             visualize_rgb(rgb),
@@ -658,31 +699,11 @@ class MonoTrainer(object):
                 title='Mask',
                 caption='Mask'))
 
-        max_depth = max(
-            ((depth_mask > 0).float() * gt_depth).max().item(),
-            ((depth_mask > 0).float() * depth_pred).max().item())
-        self.vis[0].heatmap(
-            depth_pred.squeeze().flip(0),
-            env=self.vis[1],
-            win='depth_pred',
-            opts=dict(
-                title='Depth Prediction',
-                caption='Depth Prediction',
-                xmax=max_depth,
-                xmin=gt_depth.min().item(),
-                width=512,
-                height=256))
+        depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
+        if save_to_disk:
+            py.io.write_image(depth_fig, osp.join(data_folder, 'depths.png'))
+        self.vis[0].plotlyplot(depth_fig, win="depths", env=self.vis[1])
 
-        self.vis[0].heatmap(
-            gt_depth.squeeze().flip(0),
-            env=self.vis[1],
-            win='gt_depth',
-            opts=dict(
-                title='Depth GT',
-                caption='Depth GT',
-                xmax=max_depth,
-                width=512,
-                height=256))
         pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
         gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
         if len(pred_seg) > 0 and len(gt_seg) > 0:
@@ -712,26 +733,42 @@ class MonoTrainer(object):
         pred_normals = output.get(DataType.Normals, scale=1)
         gt_normals = data.get(DataType.Normals, scale=1)
         if len(pred_normals) > 0 and len(gt_normals) > 0:
-            pred_normals = pred_normals[0][0].cpu()
-            gt_normals = gt_normals[0][0].cpu()
+            pred_normals = pred_normals[0][0].cpu().detach()
+            pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
+            gt_normals = gt_normals[0][0].cpu().detach()
+            gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
+
+            normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
+            if save_to_disk:
+                py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
+
+            self.vis[0].plotlyplot(normals_fig, win="normals", env=self.vis[1])
+
+        pred_plane_param = output.get(DataType.PlaneParams, scale=1)
+        gt_plane_param = data.get(DataType.PlaneParams, scale=1)
+        if len(pred_plane_param) > 0 and len(gt_normals) > 0:
+            gt_plane_param = toPlaneParams(gt_normals[0], data.get(DataType.Depth, scale=1)[0])
+            pred_plane_param = pred_plane_param[0][0].cpu()
+            gt_plane_param = gt_plane_param[0].cpu()
             self.vis[0].heatmap(
-                visualizeChannels(gt_normals).squeeze().flip(0),
+                stackVerticaly(gt_plane_param).squeeze().flip(0),
                 env=self.vis[1],
-                win='normals_gt',
+                win='plane_params_gt',
                 opts=dict(
-                    title='Normals GT',
-                    caption='Normals GT',
+                    title='Plane Params GT',
+                    caption='Plane Params GT',
                     width=512,
                     height=768))
             self.vis[0].heatmap(
-                visualizeChannels(pred_normals).squeeze().flip(0),
+                stackVerticaly(pred_plane_param).squeeze().flip(0),
                 env=self.vis[1],
-                win='normals_pred',
+                win='plane_params_pred',
                 opts=dict(
-                    title='Normals Prediction',
-                    caption='Normals Prediction',
+                    title='Plane Params Prediction',
+                    caption='Plane Params Prediction',
                     width=512,
                     height=768))
+
         planes = data.get(DataType.Planes)
         if len(planes) > 0:
             planes_data = planes[0][0].cpu()
@@ -839,12 +876,18 @@ class MonoTrainer(object):
             self.checkpoint_dir,
             'checkpoint_latest.pth')
 
+        # avoid exporting DataParallel
+        if isinstance(self.network, torch.nn.DataParallel):
+            state_dict = self.network.module.state_dict()
+        else:
+            state_dict = self.network.state_dict()
+
         # Actually saves the latest checkpoint and also updating the file holding the best one
         util.save_checkpoint(
             {
-                'epoch': self.epoch + 1,
+                'epoch': self.epoch,
                 'experiment': self.name,
-                'state_dict': self.network.state_dict(),
+                'state_dict': state_dict,
                 'optimizer': self.optimizer.state_dict(),
                 'loss_meters': serializeAverageMeters(self.loss_meters),
                 'best_d1_inlier': self.best_d1_inlier

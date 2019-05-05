@@ -3,7 +3,7 @@ import torch
 import visdom
 from trainers import MonoTrainer
 import dataset
-from util import set_caffe_param_mult
+from util import set_caffe_param_mult, load_encoder_weights
 from run_utils import setupPipeline, parseArgs, setupGPUDevices
 
 import os.path as osp
@@ -22,7 +22,7 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 10
+visualization_freq = 100
 validation_sample_freq = -1
 
 model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(
@@ -96,5 +96,8 @@ trainer = MonoTrainer(
     validation_sample_freq=validation_sample_freq)
 
 # trainer.setDryRun(True)
+if args.encoder_weights is not None:
+    load_encoder_weights(network, args.encoder_weights)
+# trainer.visualizeNetwork(args.checkpoint)
 trainer.train(args.checkpoint, args.only_weights)
 # test(experiment_name)

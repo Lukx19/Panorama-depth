@@ -9,7 +9,7 @@ import torch.nn.functional as F
 
 from util import xavier_init
 from annotated_data import AnnotatedData, DataType
-
+import numpy as np
 
 # @inproceedings{cheng2018depth,
 #   title={Learning Depth with Convolutional Spatial Propagation Network},
@@ -138,7 +138,8 @@ class CSPN(nn.Module):
 class RectNet(nn.Module):
 
     def __init__(self, in_channels, cspn=False, reflection_pad=False,
-                 normal_est=False, segmentation_est=False):
+                 normal_est=False, segmentation_est=False, plane_param_es=False,
+                 calc_planes=False):
         super(RectNet, self).__init__()
 
         # Network definition
@@ -212,7 +213,26 @@ class RectNet(nn.Module):
             self.cspn = CSPN()
 
         self.calc_normals = normal_est
-        if self.calc_normals:
+        self.calc_plane_params = plane_param_es
+        self.calc_planes = calc_planes
+        if self.calc_normals or self.calc_plane_params:
+            # self.decoder_norm0_0 = ConvTransposeELUBlock(
+            #     512, 256, 4, stride=2, padding=1, reflection_pad=reflection_pad)
+
+            # self.decoder_norm0_1 = ConvELUBlock(
+            #     256, 256, 5, padding=2, reflection_pad=reflection_pad)
+
+            # self.decoder_norm1_0 = ConvTransposeELUBlock(
+            #     256, 128, 4, stride=2, padding=1, reflection_pad=reflection_pad)
+
+            # self.decoder_norm1_1 = ConvELUBlock(
+            #     128, 128, 5, padding=2, reflection_pad=reflection_pad)
+            # self.decoder_norm1_0 = ConvTransposeELUBlock(
+            #     256, 128, 4, stride=2, padding=1, reflection_pad=reflection_pad)
+            # self.decoder_norm1_2 = ConvELUBlock(
+            #     128, 64, 1, reflection_pad=reflection_pad)
+            # self.normal_prediction = ConvELUBlock(64, 3, 3, padding=1)
+
             self.normal_cov1 = ConvELUBlock(64, 16, 3, padding=1)
             self.normal_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
             self.normal_cov3 = nn.Conv2d(32, 3, 1)
@@ -221,6 +241,9 @@ class RectNet(nn.Module):
             self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
             self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
             self.seg_cov3 = nn.Conv2d(32, 1, 1)
+
+        if self.calc_planes:
+            self.planar_to_depth = PlanarToDepth(height=256, width=512)
             # Initialize the network weights
         self.apply(xavier_init)
 
@@ -305,36 +328,60 @@ class RectNet(nn.Module):
         else:
             opt_depth = pred_1x
 
-        outputs = [opt_depth, pred_2x]
-        if self.calc_normals:
+        outputs = {}
+        outputs["depth1x"] = opt_depth
+        outputs["depth2x"] = pred_2x
+        if self.calc_normals or self.calc_plane_params:
             normal1 = self.normal_cov1(decoder1_2_out)
             normal2 = self.normal_cov2(decoder1_2_out)
             normal_cat = torch.cat((normal1, normal2), 1)
             pred_normals = self.normal_cov3(normal_cat)
-            # print(pred_normals.size())
-            norm = torch.norm(pred_normals, p=None, keepdim=True, dim=1)
+
+            # decoder_norm0_0_out = self.decoder_norm0_0(encoder2_2_out)
+            # decoder_norm0_1_out = self.decoder_norm0_1(decoder_norm0_0_out)
+            # decoder_norm1_0_out = self.decoder_norm1_0(decoder_norm0_1_out)
+            # decoder_norm1_1_out = self.decoder_norm1_1(decoder_norm1_0_out)
+            # decoder_norm1_2_out = self.decoder_norm1_2(decoder_norm1_1_out)
+            # pred_normals = self.normal_prediction(decoder_norm1_2_out)
+            # norm = torch.norm(pred_normals, p=None, keepdim=True, dim=1)
             # print(norm.size())
-            pred_normals = pred_normals / norm
+            if self.calc_normals:
+                pred_normals = torch.tanh(pred_normals)
+                outputs["normals"] = pred_normals
+            else:
+                outputs["PlaneParams"] = pred_normals
+
             # print(pred_normals.size())
-            outputs.append(pred_normals)
+
         if self.calc_segmentation:
             seg1 = self.seg_cov1(decoder1_2_out)
             seg2 = self.seg_cov2(decoder1_2_out)
             seg_cat = torch.cat((seg1, seg2), 1)
             pred_seg = self.seg_cov3(seg_cat)
-            outputs.append(pred_seg)
+            outputs["segmentation"] = pred_seg
+
+        if (self.calc_normals and self.calc_planes
+                and DataType.Planes in inputs and self.calc_segmentation):
+            planes = inputs[DataType.Planes]
+            outputs["depth_planar"] = self.planar_to_depth(opt_depth, planes,
+                                                           pred_seg, pred_normals)
+
         return outputs
 
     def annotateOutput(self, outputs):
         data = AnnotatedData()
-        data.add(outputs[0], DataType.Depth)
-        data.add(outputs[1], DataType.Depth, scale=2)
-        if self.calc_normals:
-            data.add(outputs[2], DataType.Normals)
+        if "normals" in outputs:
+            data.add(outputs["normals"], DataType.Normals)
 
-        if self.calc_segmentation:
-            data.add(outputs[3], DataType.PlanarSegmentation)
+        if "PlaneParams" in outputs:
+            data.add(outputs["PlaneParams"], DataType.PlaneParams)
 
+        if "segmentation" in outputs:
+            data.add(outputs["segmentation"], DataType.PlanarSegmentation)
+        if "depth_planar" in outputs:
+            data.add(outputs["depth_planar"], DataType.Depth)
+        data.add(outputs["depth1x"], DataType.Depth)
+        data.add(outputs["depth2x"], DataType.Depth, scale=2)
         return data
 
 
@@ -946,3 +993,97 @@ class SkipBlock(nn.Module):
 
         # Return the sum of the outputs of the first block and the third block
         return out1 + out3
+
+
+class Depth2Points(nn.Module):
+    def __init__(self, height, width):
+        super(Depth2Points, self).__init__()
+        phi = torch.zeros((height, width))
+        theta = torch.zeros((height, width))
+
+        hcam_deg = 360
+        vcam_deg = 180
+        # Camera rotation angles in radians
+        hcam_rad = hcam_deg / 180.0 * np.pi
+        vcam_rad = vcam_deg / 180.0 * np.pi
+        # print(hcam_deg, vcam_deg)
+        for v in range(height):
+            for u in range(width):
+                theta[v, u] = (u - width / 2.0) / width * hcam_rad
+                phi[v, u] = -(v - height / 2.0) / height * vcam_rad
+        self.cos_theta = nn.Parameter(torch.cos(theta), requires_grad=False)
+        self.sin_theta = nn.Parameter(torch.sin(theta), requires_grad=False)
+        self.cos_phi = nn.Parameter(torch.cos(phi), requires_grad=False)
+        self.sin_phi = nn.Parameter(torch.sin(phi), requires_grad=False)
+
+    def forward(self, depth):
+        X = depth * self.cos_phi * self.cos_theta
+        Y = depth * self.cos_phi * self.sin_theta
+        Z = depth * self.sin_phi
+        points = torch.cat((X, Y, Z), dim=1)
+        # print(points)
+        return points
+
+
+def planeAwarePooling(params, planes, keepdim=False):
+    '''
+        params: B x 1 x 3 x N
+        planes: B x P x 1 x N
+        Where B is batch number, P is number of planes. Some planes might be empty
+        and N is image height x width
+        Return B x P x 3 x 1 or B x P x 3 x N if keepdim=True
+    '''
+    planes3_channel = None
+    plane_weights = None
+    with torch.no_grad():
+        # b x p
+        plane_weights = torch.sum(planes, dim=3) + 1
+        planes3_channel = torch.cat((planes, planes, planes), dim=2)
+    # print(params.size(), planes.size(), planes3_channel.size())
+    avg_param = torch.sum(params * planes3_channel, dim=3)
+    # print(avg_param.size(), plane_weights.size())
+    # b x p x 3
+    avg_param /= plane_weights
+    avg_param = torch.reshape(avg_param, (*avg_param.size(), 1))
+    if keepdim:
+        return avg_param * planes3_channel
+    else:
+        return avg_param
+
+
+class PlanarToDepth(nn.Module):
+    def __init__(self, height, width):
+        super(PlanarToDepth, self).__init__()
+        self.to3d = Depth2Points(height, width)
+
+    def forward(self, depth, planes, segmentation, normals):
+        points = self.to3d(depth)
+        rays = self.to3d(torch.ones_like(depth))
+        b, p, _, h, w = planes.size()
+        planes = torch.reshape(planes, (b, p, 1, -1))
+        points = torch.reshape(points, (b, 1, 3, -1))
+        depths = torch.reshape(depth, (b, 1, 1, -1))
+        rays = torch.reshape(rays, (b, 1, 3, -1))
+        # BxPx3xN
+        avg_normals = planeAwarePooling(normals, planes, keepdim=True)
+        centroids = planeAwarePooling(depths, planes, keepdim=True)
+
+        norm = torch.sum(rays * avg_normals, dim=2) + 0.000001
+        planar_depths = (torch.sum(centroids * avg_normals, dim=2) / norm)
+        # B x P x N
+        planar_depths = torch.sum(planar_depths, dim=1)
+        planar_depths = torch.reshape(planar_depths, (b, 1, h, w))
+        return segmentation * planar_depths + (1 - segmentation) * depth
+
+
+def toPlaneParams(normals, depth):
+    '''
+        normals: B x 3 x H x W
+        depth: B x 1 x H x W
+        Return plane parameter for each pixel B x 3 x H x W
+    '''
+    zero_mask = (depth.detach() < 0.00001).float()
+    depth_padded = depth + torch.ones_like(depth) * zero_mask
+    params = normals / depth_padded
+    params = params * (1 - zero_mask)
+    return params

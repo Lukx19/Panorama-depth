@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
-from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss, PlaneNormSegLoss
+from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss, PlaneNormSegLoss, PlaneParamsLoss
 import argparse
 import dataset
 from trainers import parse_data, parse_data_sparse_depth, genTotalLoss
@@ -31,6 +31,9 @@ def setupPipeline(network_type, loss_type, add_points):
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetSegNormals':
         model = RectNet(in_channels, cspn=False, normal_est=True, segmentation_est=True)
+    elif network_type == 'RectNetPlaneParams':
+        model = RectNet(in_channels, cspn=False, normal_est=False,
+                        segmentation_est=False, plane_param_es=True)
     elif network_type == 'RectNetPad':
         model = RectNet(in_channels, cspn=False, reflection_pad=True)
         alpha_list = [0.535, 0.272]
@@ -57,9 +60,11 @@ def setupPipeline(network_type, loss_type, add_points):
             criterion = NormSegLoss()
         elif loss_type == "PlaneNormSegLoss":
             criterion = PlaneNormSegLoss()
-            # mul_factors["Distance_Pred_Plane_Loss"] = 3.0
-            # mul_factors["Plane_Distance_Loss"] = 3.0
+            # mul_factors["Distance_Pred_Plane_Loss"] = 10.0
+            # mul_factors["Plane_Distance_Loss"] = 10.0
             # mul_factors["Planar_Cosine_Loss"] = 3.0
+        elif loss_type == "PlaneParamsLoss":
+            criterion = PlaneParamsLoss()
         else:
             assert False, 'Unsupported loss type'
     return model, (criterion, genTotalLoss(mul_factors)), parser, rgb_transformer, depth_transformer
@@ -76,7 +81,7 @@ def parseArgs(test=False):
 
     parser.add_argument('--network_type', default="RectNet", type=str,
                         help="UResNet or RectNet or RectNetCSPN \
-                            or UResNet_Resnet or RectNetPad or DBNet")
+                            or UResNet_Resnet or RectNetPad or DBNet or RectNetPlaneParams")
 
     parser.add_argument('--add_points', action="store_true", default=False,
                         help='In addition to monocular image also add sparse points to training.')
@@ -121,8 +126,11 @@ def parseArgs(test=False):
                             help='Use only weights from checkpoint. Optimizer state or \
                             epoch information is not restored.')
 
+        parser.add_argument('--encoder_weights', type=str, default=None,
+                            help='Path to checkpoint with encoder weights')
+
         parser.add_argument('--loss_type', default="Revis", type=str,
-                            help='MultiScale or Revis or PlaneNormSegLoss')
+                            help='MultiScale or Revis or PlaneNormSegLoss or PlaneParamsLoss')
 
         parser.add_argument('--batch_size', default=8,
                             type=int, help='Batch size')
@@ -136,16 +144,16 @@ def parseArgs(test=False):
 
 
 def setupGPUDevices(gpus_list, model, criterion=None):
+    if gpus_list == "cpu":
+        device = torch.device("cpu")
+        network = model.float().to(device)
+        return network, criterion, device
     device_ids = [int(s) for s in gpus_list.split(',')]
     print(device_ids)
     print('cuda version=', torch.version.cuda)
     print('cudnn version=', torch.backends.cudnn.version())
     print("cudnn enables=", torch.backends.cudnn.enabled)
     print("cudnn benchmark=", torch.backends.cudnn.benchmark)
-    if device_ids == "cpu":
-        device = torch.device("cpu")
-        network = model.float().to(device)
-        return network, criterion, device
 
     device = torch.device('cuda', device_ids[0])
     if len(device_ids) > 1:

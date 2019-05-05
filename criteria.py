@@ -3,6 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from annotated_data import DataType
+from network import Depth2Points, planeAwarePooling, toPlaneParams
 
 
 class Sobel(nn.Module):
@@ -25,36 +26,6 @@ class Sobel(nn.Module):
         out = out.contiguous().view(-1, 2, x.size(2), x.size(3))
 
         return out
-
-
-class Depth2Points(nn.Module):
-    def __init__(self, height, width):
-        super(Depth2Points, self).__init__()
-        phi = torch.zeros((height, width))
-        theta = torch.zeros((height, width))
-
-        hcam_deg = 360
-        vcam_deg = 180
-        # Camera rotation angles in radians
-        hcam_rad = hcam_deg / 180.0 * np.pi
-        vcam_rad = vcam_deg / 180.0 * np.pi
-        # print(hcam_deg, vcam_deg)
-        for v in range(height):
-            for u in range(width):
-                theta[v, u] = (u - width / 2.0) / width * hcam_rad
-                phi[v, u] = -(v - height / 2.0) / height * vcam_rad
-        self.cos_theta = nn.Parameter(torch.cos(theta), requires_grad=False)
-        self.sin_theta = nn.Parameter(torch.sin(theta), requires_grad=False)
-        self.cos_phi = nn.Parameter(torch.cos(phi), requires_grad=False)
-        self.sin_phi = nn.Parameter(torch.sin(phi), requires_grad=False)
-
-    def forward(self, depth):
-        X = depth * self.cos_phi * self.cos_theta
-        Y = depth * self.cos_phi * self.sin_theta
-        Z = depth * self.sin_phi
-        points = torch.cat((X, Y, Z), dim=1)
-        # print(points)
-        return points
 
 
 class SquaredGradientLoss(nn.Module):
@@ -111,45 +82,61 @@ def createValidMean(mask):
     valid_pixels = (mask > 0).sum().float()
 
     def validMean(val):
-        return torch.sum(mask * val) / (valid_pixels)
+        # print(mask.size(), val.size())
+        val = torch.sum(mask * val)
+        # print(val.size())
+        return val / (valid_pixels)
+
     return validMean
 
 
 def createPlaneMean(mask, planes):
-    # b, p = planes.size()[0:2]
-    valid_pixels = torch.sum(planes * mask)
-    # valid_per_plane = torch.sum(torch.reshape(planes * mask, (b, p, -1)), dim=2)
+    b, p = planes.size()[0:2]
+    # valid_pixels = torch.sum(planes * mask)
+    planes = torch.reshape(planes, (b, p, -1))
+    # B x P
+    valid_per_plane = torch.sum(planes.detach(), dim=2)
 
-    # valid_planes_in_batch = torch.sum(torch.sign(valid_per_plane), dim=1)
+    valid_planes_in_batches = torch.sum(torch.sign(valid_per_plane))
     # #  avoid division by 0
-    # valid_per_plane[valid_per_plane < 0.0001] = 1
+    valid_per_plane[valid_per_plane < 0.0001] = 1
 
     def mean(val):
-        # if len(val.size()) == 2:
-        #     val = torch.reshape(val, (b, p, 1))
-        # else:
-        #     val = torch.reshape(val, (b, p, -1))
-        # summed = torch.sum(val, dim=2)
-        # batch_mean = torch.sum(summed / valid_per_plane, dim=1) / valid_planes_in_batch
-        # return torch.mean(batch_mean)
-        summed = torch.sum(val)
-        return summed / valid_pixels
+        val = torch.reshape(val, (b, 1, -1))
+        # B x P
+        summed = torch.sum(planes * val, dim=2)
+        return torch.sum(summed / valid_per_plane) / valid_planes_in_batches
 
     return mean
 
 
 def cosineLoss(pred_normal, gt_normal, dim=1, mean_fce=torch.mean):
-    return mean_fce(
-        torch.abs(1 - F.cosine_similarity(pred_normal, gt_normal, dim=dim, eps=1e-8)))
-
-
-def L1Loss(pred, target, mean_fce=torch.mean):
-    val = torch.abs(pred - target)
+    val = torch.abs(1 - F.cosine_similarity(pred_normal, gt_normal, dim=dim, eps=1e-8))
+    if mean_fce is None:
+        return val
     return mean_fce(val)
 
 
-def l2Loss(pred, target, mean_fce=torch.mean):
+# def cosineLossNorm(pred, gt):
+#     '''
+#         pred, gt: BxPx3xN
+#     '''
+#     pred_norm = torch.norm(pred, p=None, keepdim=True, dim=2)
+#     gt_norm = torch.norm(gt, p=None, keepdim=True, dim=2)
+#     return cosineLoss(pred / pred_norm, gt / gt_norm, dim=2, mean_fce=None)
+
+
+def l1Loss(pred, target, mean_fce=None, dim=1):
+    val = F.l1_loss(pred, target, reduction='none')
+    if mean_fce is None:
+        return val
+    return mean_fce(val)
+
+
+def l2Loss(pred, target, mean_fce=None):
     val = F.mse_loss(pred, target, reduction='none')
+    if mean_fce is None:
+        return val
     # print(val.size())
     return mean_fce(val)
 
@@ -230,12 +217,6 @@ def revisLoss(pred, gt, mask, sobel):
     b, _, h, w = pred.size()
     ones = pred.new_ones(b, 1, h, w)
 
-    # gt += (1 - mask) * 0.0001
-    # pred += (1 - mask) * 0.0001
-
-    # gt = torch.log(gt)
-    # pred = torch.log(pred)
-
     depth_grad = sobel(gt)
     output_grad = sobel(pred)
 
@@ -258,14 +239,24 @@ def revisLoss(pred, gt, mask, sobel):
 
     validMean = createValidMean(mask)
     #  L1 loss on depth distances
-    loss_depth = L1Loss(pred, gt, validMean)
-    loss_dx = validMean(
-        (torch.abs(output_grad_dx - depth_grad_dx)))
-    loss_dy = validMean(
-        (torch.abs(output_grad_dy - depth_grad_dy)))
-    loss_normal = cosineLoss(output_normal, depth_normal, dim=1, mean_fce=validMean)
+    loss_depth = validMean(torch.log(l1Loss(pred, gt) + 1))
+    loss_dx = validMean(torch.log(l1Loss(output_grad_dx, depth_grad_dx) + 1))
+    loss_dy = validMean(torch.log(l1Loss(output_grad_dy, depth_grad_dy) + 1))
+    loss_normal = validMean(cosineLoss(output_normal, depth_normal, dim=1))
     # print(loss_depth, loss_normal, loss_dx, loss_dy)
-    return loss_depth + loss_normal + (loss_dx + loss_dy)
+    losses = {
+        "L1_depth_loss": loss_depth,
+        "Depth_normals_loss": loss_normal,
+        "Depth_gradient_loss": loss_dx + loss_dy
+    }
+    return losses, _
+
+
+def sumLosses(losses):
+    total_loss = 0
+    for key, loss in losses.items():
+        total_loss += loss
+    return total_loss
 
 
 class GradLoss(nn.Module):
@@ -286,7 +277,8 @@ class GradLoss(nn.Module):
             b, _, w, h = pred.size()
             # print(scale, pred.size(), gt.size(), mask.size())
             if i == 0 or self.all_levels:
-                total_loss += revisLoss(pred, gt, mask, self.get_gradient)
+                losses, _ = revisLoss(pred, gt, mask, self.get_gradient)
+                total_loss += sumLosses(losses)
             else:
                 total_loss += self.l2_loss(pred, gt, mask)
 
@@ -332,8 +324,10 @@ class PlaneNormSegLoss(nn.Module):
         return avg_plane_normal / norm
 
     def forward(self, predictions, data):
-
+        losses = {}
+        histograms = {}
         planes = data.get(DataType.Planes, scale=1)[0]
+        # 1= pixels where are some planes 0 = otherwise
         plane_mask = torch.sign(torch.sum(planes, dim=1))
         depth_total_loss = 0
         # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
@@ -357,10 +351,19 @@ class PlaneNormSegLoss(nn.Module):
         # print(torch.sum(plane_mask), torch.sum(gt_seg), torch.sum(mask))
         b, ch, h, w = pred_normals.size()
 
-        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+        revis_losses, _ = revisLoss(pred_depth, gt_depth, mask, self.sobel)
+        losses["Pixel_l1dist_loss"] = revis_losses["L1_depth_loss"]
 
-        # validMean = createValidMean(mask)
-        # similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=validMean)
+        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+        losses["Segmentation_Loss"] = seg_total_loss
+
+        validMean = createValidMean(plane_mask)
+        planeMean = createPlaneMean(mask, planes)
+
+        similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=None)
+        histograms["Pixel_normal_similarity_loss"] = similarity.detach()
+        losses["Pixel_normal_similarity_loss"] = validMean(similarity)
+        losses["Plane_normal_similarity_loss"] = planeMean(similarity)
 
         pred_points = self.to3d(pred_depth)
         with torch.no_grad():
@@ -368,63 +371,94 @@ class PlaneNormSegLoss(nn.Module):
 
         # TODO: Use ground truth points which are distance to plane and not GT distance in general.
         #  This should improve performance on low quality GT data
-        validMean = createValidMean(plane_mask)
+
         distace_to_gt_plane = torch.abs(torch.sum((pred_points - gt_points) * gt_normals, dim=1))
-        # distace_to_pred_plane = (gt_points - pred_points) * pred_normals
+        distace_to_gt_plane = l2Loss(distace_to_gt_plane,
+                                     torch.zeros_like(distace_to_gt_plane), None)
+        histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach()
+        losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
 
-        distance_loss = l2Loss(distace_to_gt_plane,
-                               torch.zeros_like(distace_to_gt_plane), validMean)
+        losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
 
-        diff_loss = l2Loss(pred_depth, gt_depth, validMean)
-
-        validMean = createValidMean(data.get(DataType.Mask, scale=2)[0])
-        diff_loss2x = l2Loss(predictions.get(DataType.Depth, scale=2)[0],
-                             data.get(DataType.Depth, scale=2)[0], validMean)
-
-        # distance_xuy = torch.norm(pred_points - gt_points, p=None, keepdim=True, dim=1)
-        # print(distance_xuy.size())
-        # diff_loss2 = l2Loss(distance_xuy, torch.zeros_like(distance_xuy), validMean)
-
-        # distance_loss2 = L1Loss(-distace_to_pred_plane,
+        # distance_loss2 = l1Loss(-distace_to_pred_plane,
         # torch.zeros_like(distace_to_pred_plane), validMean)
 
         #  This losses look at all normals of one plane and create plane parameters
-        planes3, avg_gt_normal = None, None
-        pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
-        gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
-        gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
-        pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
+        # planes_ext, avg_gt_normal = None, None
+        # pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
+        # gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
+        # gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
+        # pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
+        # with torch.no_grad():
+        #     planes = data.get(DataType.Planes, scale=1)[0]
+        #     planes = planes * mask
+        #     b, p, h, w = planes.size()
+        #     planes = torch.reshape(planes, (b, p, 1, -1))
+        #     planes_ext = torch.cat((planes, planes, planes), dim=2)
+        #     avg_gt_normal = planeAwarePooling(gt_normals, planes)
+
+        # avg_pred_normal = planeAwarePooling(pred_normals, planes)
+        # similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=torch.mean)
+
+        # distance_pred_planes = planes_ext * (gt_points - pred_points)
+
+        # distance_pred_planes = distance_pred_planes * torch.reshape(avg_pred_normal, (b, p, 3, 1))
+        # distance_pred_planes = torch.sum(distance_pred_planes, dim=2)
+        # print(distance_pred_planes)
+        # planeMean = createValidMean(plane_mask)
+        # distance_loss_plane = l2Loss(-distance_pred_planes,
+        #                              torch.zeros_like(distance_pred_planes), planeMean)
+
+        return losses, histograms
+
+
+class PlaneParamsLoss(nn.Module):
+    def __init__(self, width=256, height=512):
+        super(PlaneParamsLoss, self).__init__()
+        self.to3d = Depth2Points(width, height)
+        self.sobel = Sobel()
+
+    def forward(self, predictions, data):
+        mask = data.get(DataType.Mask, scale=1)[0]
+        planes = data.get(DataType.Planes, scale=1)[0] * mask
+        # TODO: remove assumptions that one pixel can have only one plane
+        plane_mask = torch.sign(torch.sum(planes, dim=1))
+        gt_depth = data.get(DataType.Depth, scale=1)[0]
+        pred_depth = predictions.get(DataType.Depth, scale=1)[0]
+        gt_normals = data.get(DataType.Normals)[0]
+
+        pred_planes_params = predictions.get(DataType.PlaneParams)[0]
+        gt_planes_params = toPlaneParams(gt_normals, gt_depth)
+
+        validMean = createValidMean(data.get(DataType.Mask, scale=2)[0])
+        diff_loss2x = l1Loss(predictions.get(DataType.Depth, scale=2)[0],
+                             data.get(DataType.Depth, scale=2)[0], validMean)
+        # print(pred_planes_params.size(), gt_planes_params.size())
+        validMean = createValidMean(plane_mask)
+
+        diff_loss1x = l1Loss(pred_depth, gt_depth, validMean)
+        param_loss = l1Loss(pred_planes_params, gt_planes_params, mean_fce=validMean, dim=1)
+        similarity = cosineLoss(pred_planes_params, gt_planes_params, dim=1, mean_fce=validMean)
+
+        b, p, h, w = planes.size()
         with torch.no_grad():
-            planes = data.get(DataType.Planes, scale=1)[0]
-            planes = planes * mask
-            b, p, h, w = planes.size()
-            planes3 = torch.reshape(planes, (b, p, 1, -1))
-            planes3 = torch.cat((planes3, planes3, planes3), dim=2)
-            avg_gt_normal = self.averageNormals(gt_normals, planes3)
+            planes_ext = torch.reshape(planes, (b, p, 1, -1))
 
-        avg_pred_normal = self.averageNormals(pred_normals, planes3)
-        similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=torch.mean)
+        pred_points = self.to3d(pred_depth)
+        pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
 
-        distance_pred_planes = planes3 * (gt_points - pred_points)
-
-        distance_pred_planes = distance_pred_planes * torch.reshape(avg_pred_normal, (b, p, 3, 1))
-        distance_pred_planes = torch.sum(distance_pred_planes, dim=2)
-
-        planeMean = createPlaneMean(torch.sign(mask + gt_seg), planes)
-
-        distance_loss_plane = l2Loss(-distance_pred_planes,
-                                     torch.zeros_like(distance_pred_planes), planeMean)
-
+        pred_planes_params = torch.reshape(pred_planes_params, (b, 1, 3, -1))
+        pred_planes_params = planeAwarePooling(pred_planes_params, planes_ext)
+        # print(pred_points.size(), pred_planes_params.size())
+        q_factor = torch.sum(pred_points * pred_planes_params, dim=2, keepdim=True)
+        # L1 loss
+        q_loss = torch.sum(planes_ext * torch.abs(q_factor - torch.ones_like(q_factor)))
+        # TODO: same assumtion about one pixel per plane
+        q_loss /= torch.sum(plane_mask)
         return {
-            # "Depth_Loss": depth_total_loss,
-            "Segmentation_Loss": seg_total_loss,
-            # "Normal_Cosine_Loss": similarity,
-            # "Planar_Cosine_Loss": similarity_planar,
-            "Plane_Distance_Loss": distance_loss,
-            "Diff_Loss": diff_loss,
+            "Param_Loss": param_loss,
+            "Param_Similarity_Loss": similarity,
+            "Q_Loss": q_loss,
             "Diff_2x_Loss": diff_loss2x,
-            # "Plane_Distance_Loss2": distance_loss2,
-            # "Distance_Pred_Plane_Loss": distance_loss_plane,
-            # "Plane_Loss": plane_loss,
-            # "L1_Normal_Loss": normals_loss
+            # "Diff_1x_Loss": diff_loss1x,
         }

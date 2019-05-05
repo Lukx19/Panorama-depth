@@ -163,6 +163,10 @@ dependencies:
   - boost=1.67.0=py37_4
   - libtiff=4.0.10=h2733197_2
   - scikit-image=0.15.0=py37he1b5a44_0
+  - python-graphviz
+    - plotly
+  - plotly-orca
+  - psutil
   - pip:
       - pyzmq==17.1.2
       - tornado==5.1.1
