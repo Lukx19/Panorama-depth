@@ -87,8 +87,8 @@ def load_encoder_weights(model, checkpoint_path):
     checkpoint = torch.load(checkpoint_path)
     if "state_dict" in checkpoint:
         weights = checkpoint["state_dict"]
-        encoder_layers = filter(lambda val: ("encoder" in val[0]
-                                             or "input" in val[0]), weights.items())
+        encoder_layers = filter(lambda val: ("encoder" in val[0] or
+                                             "input" in val[0]), weights.items())
         encoder_layers = dict(encoder_layers)
         print("Loaded encoder layers:", encoder_layers.keys())
         load_partial_model(model, encoder_layers)
@@ -117,8 +117,8 @@ def set_caffe_param_mult(m, base_lr, base_weight_decay):
     param_list = []
     for name, params in m.named_parameters():
         if name.find('bias') != -1:
-            param_list.append({'params': params, 'lr': 2 *
-                               base_lr, 'weight_decay': 0.0})
+            param_list.append({'params': params, 'lr': 2
+                               * base_lr, 'weight_decay': 0.0})
         else:
             param_list.append({'params': params, 'lr': base_lr,
                                'weight_decay': base_weight_decay})
@@ -187,8 +187,8 @@ def plot_grad_flow(named_parameters, filename):
     max_grads = []
     layers = []
     for n, p in named_parameters:
-        if(p.requires_grad and p.is_leaf
-                and p.grad is not None and("bias" not in n)):
+        if(p.requires_grad and p.is_leaf and
+                p.grad is not None and("bias" not in n)):
             layers.append(n)
             ave_grads.append(p.grad.abs().mean())
             max_grads.append(p.grad.abs().max())
@@ -291,8 +291,8 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
     heatmap Tensor HxW
     '''
     height = 2 * heatmap.size(0)
-    width = heatmap.size(1)
-    image = tvt.functional.to_pil_image((rgb.detach() * 255).byte())
+    width = 2 * heatmap.size(1)
+    # image = tvt.functional.to_pil_image((rgb.detach() * 255).byte())
     heatmap = go.Heatmap(
         z=heatmap.detach().numpy(),
         colorscale=colorscheme,
@@ -310,18 +310,18 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
         height=height,
         width=width,
         title=title,
-        images=[go.layout.Image(
-            visible=True,
-            # x=0,
-            # sizex=width,
-            # y=0,
-            # sizey=height,
-            # xref="paper",
-            # yref="paper",
-            opacity=1.0,
-            layer="below",
-            source=image,
-            sizing="stretch")]
+        # images=[go.layout.Image(
+        #     visible=True,
+        #     # x=0,
+        #     # sizex=width,
+        #     # y=0,
+        #     # sizey=height,
+        #     # xref="paper",
+        #     # yref="paper",
+        #     opacity=1.0,
+        #     layer="below",
+        #     source=image,
+        #     sizing="stretch")]
     )
     return {'data': [heatmap], 'layout': layout}
 
