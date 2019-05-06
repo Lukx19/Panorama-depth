@@ -299,6 +299,7 @@ class MonoTrainer(object):
         self.d1_inlier_meter = AverageMeter()
         self.d2_inlier_meter = AverageMeter()
         self.d3_inlier_meter = AverageMeter()
+        self.sparse_abs_rel_error_meter = AverageMeter()
 
         # Track the best inlier ratio recorded so far
         self.best_d1_inlier = 0.0
@@ -471,7 +472,8 @@ class MonoTrainer(object):
         else:
             # Initialize any training visualizations
             self.initialize_visualizations()
-
+        # make sure that validation is correct without bugs
+        self.validate()
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
 
@@ -498,6 +500,7 @@ class MonoTrainer(object):
         self.d1_inlier_meter.reset()
         self.d2_inlier_meter.reset()
         self.d3_inlier_meter.reset()
+        self.sparse_abs_rel_error_meter.reset()
         self.is_best = False
 
     def compute_eval_metrics(self, output, data):
@@ -508,7 +511,7 @@ class MonoTrainer(object):
 
         gt_depth = data.get(DataType.Depth, scale=1)[0]
         depth_mask = data.get(DataType.Depth, scale=1)[0]
-        sparse_pts = data.get(DataType.SparseDepth, scale=1)[0]
+        sparse_pts = data.get(DataType.SparseDepth, scale=1)
         if len(sparse_pts) > 0:
             pts_present_mask = torch.sign(sparse_pts[0])
             depth_mask = depth_mask - depth_mask * pts_present_mask
@@ -527,6 +530,8 @@ class MonoTrainer(object):
         d1 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=1)
         d2 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=2)
         d3 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=3)
+        if len(sparse_pts) > 0:
+            sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
 
         self.abs_rel_error_meter.update(abs_rel, N)
         self.sq_rel_error_meter.update(sq_rel, N)
@@ -535,6 +540,9 @@ class MonoTrainer(object):
         self.d1_inlier_meter.update(d1, N)
         self.d2_inlier_meter.update(d2, N)
         self.d3_inlier_meter.update(d3, N)
+        if len(sparse_pts) > 0:
+            self.sparse_abs_rel_error_meter.update(sparse_abs_rel,
+                                                   pts_present_mask.sum())
 
     def load_checkpoint(self, checkpoint_path=None, weights_only=False, eval_mode=False):
         '''
@@ -675,10 +683,11 @@ class MonoTrainer(object):
         gt_depth = gt_depth.squeeze().flip(0).numpy()
 
         for key, hist in loss_hist.items():
+            # print(key)
             max_val = torch.max(hist[0]).item()
             if max_val > 8:
                 max_val = 8.0
-            graph = imageHeatmap(rgb, hist[0].cpu().flip(0), title=key, max_val=max_val)
+            graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
             if save_to_disk:
                 py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
             self.vis[0].plotlyplot(graph, win=key, env=self.vis[1])
@@ -793,8 +802,9 @@ class MonoTrainer(object):
         d1 = self.d1_inlier_meter.avg
         d2 = self.d2_inlier_meter.avg
         d3 = self.d3_inlier_meter.avg
+        sparse_abs_rel = self.sparse_abs_rel_error_meter.avg
 
-        errors = torch.FloatTensor([abs_rel, sq_rel, lin_rms, log_rms])
+        errors = torch.FloatTensor([abs_rel, sq_rel, lin_rms, log_rms, sparse_abs_rel])
         errors = errors.view(1, -1)
         epoch_expanded = torch.ones(errors.shape) * (self.epoch + 1)
         self.vis[0].line(
@@ -804,7 +814,7 @@ class MonoTrainer(object):
             win='error_metrics',
             update='append',
             opts=dict(
-                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error', 'Log RMS Error']))
+                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error', 'Log RMS Error', "Sparse Pts. Abs Rel"]))
 
         inliers = torch.FloatTensor([d1, d2, d3])
         inliers = inliers.view(1, -1)
@@ -850,7 +860,8 @@ class MonoTrainer(object):
                   '  Avg. Log RMS Error: {:.4f}\n'
                   '  Inlier D1: {:.4f}\n'
                   '  Inlier D2: {:.4f}\n'
-                  '  Inlier D3: {:.4f}\n\n'.format(
+                  '  Inlier D3: {:.4f}\n'
+                  '  Sparse pts Avg .Abs. Rel. Error: {:.4f}\n\n'.format(
                       self.epoch + 1,
                       self.abs_rel_error_meter.avg,
                       self.sq_rel_error_meter.avg,
@@ -858,7 +869,8 @@ class MonoTrainer(object):
                       math.sqrt(self.log_rms_sq_error_meter.avg),
                       self.d1_inlier_meter.avg,
                       self.d2_inlier_meter.avg,
-                      self.d3_inlier_meter.avg))
+                      self.d3_inlier_meter.avg,
+                      self.sparse_abs_rel_error_meter.avg))
 
         print(report)
         # Also update the best state tracker
