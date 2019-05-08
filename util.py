@@ -293,6 +293,7 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
     height = 2 * heatmap.size(0)
     width = 2 * heatmap.size(1)
     # image = tvt.functional.to_pil_image((rgb.detach() * 255).byte())
+    real_max = torch.max(heatmap).item()
     heatmap = go.Heatmap(
         z=heatmap.detach().numpy(),
         colorscale=colorscheme,
@@ -300,6 +301,16 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
         zmin=0,
         zmax=max_val,
     )
+
+    steps = []
+    for num in np.linspace(0, real_max, 50):
+        step = dict(
+            method='restyle',
+            args=['zmax', num],
+            label=str(np.around(num, decimals=2)),
+        )
+        steps.append(step)
+
     # TODO: no image under heatmap right now. No idea why
     # https://community.plot.ly/t/using-local-image-as-background-image/4381/3
 
@@ -310,6 +321,10 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
         height=height,
         width=width,
         title=title,
+        sliders=[dict(
+            pad={"t": 50},
+            steps=steps
+        )]
         # images=[go.layout.Image(
         #     visible=True,
         #     # x=0,
@@ -379,3 +394,10 @@ def stackVerticaly(tensor):
     ch, h, w = tensor.size()
     tensor = tensor.reshape((1, -1, w))
     return tensor
+
+
+def mergeInDict(dict_a, dict_b):
+    for key, val in dict_b.items():
+        if key not in dict_a:
+            dict_a[key] = val
+    return dict_a
