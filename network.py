@@ -135,11 +135,173 @@ class CSPN(nn.Module):
         return torch.max(max_element1_2, max_element3_4)
 
 
+def signToLabel(x):
+    """Changes from tensor with B x 3 x H x W where each channels
+    has data in range [-1,1] to class label representation
+    B x H x W with class labels [0,7]
+
+    Parameters
+    ----------
+    x : FloatTensor [-1,1]
+    """
+    #  range change from [-1,1] to either 0 if negative or 1 if >=0
+    x = torch.sign(torch.sign(x) + 1)
+    # batch_size = x.size(0)
+    ones, twos, fours = torch.split(torch.ones_like(x), split_size_or_sections=1, dim=1)
+    twos *= 2
+    fours *= 4
+    binary_conv = torch.cat((ones, twos, fours), dim=1)
+    return torch.sum(x * binary_conv, dim=1).long()
+
+
+def labelToSign(tensor):
+    """
+    Parameters
+    ----------
+    tensor : Tensor B x H x W
+        Each value is in range [0,7]
+
+    Returns
+    -------
+    Tensor B x 3 x H x W
+        Values are -1 or 1 based on class
+    """
+
+    x = tensor.int()
+    channels = []
+    for i in range(3):
+        res = x // 2
+        channels.append(torch.fmod(x, 2))
+        x = res
+    signs = torch.cat(channels, dim=1)
+    # going from  0 or 1 to -1 or 1
+    signs = signs + (signs - 1)
+    return signs.float()
+
+
+def expSphere(x):
+    """Calculates activation function similar to softmax with sqrt in denominator
+        Compute:
+                exp(x_i) / sqrt( sum( exp(x_j)**2 ) )
+    Parameters
+    ----------
+    x : Tensor Bx3xHxW
+
+    Returns
+    -------
+    Tensor Bx3xHxW
+    """
+    batchsize, _, _, _ = x.size()
+    x = torch.exp(x)
+    # Trick for numeric stability (norm won't becomes 0)
+    x = x + torch.sign(x) * 1e-4
+    norm = torch.norm(x, p=2, dim=1, keepdim=True)
+    norm = norm.detach()
+    return x / norm
+
+
+class NormalsDeepEmbedding(nn.Module):
+    def __init__(self, in_channels):
+
+        self.decoder_norm0_0 = ConvTransposeELUBlock(
+            in_channels, 256, 4, stride=2, padding=1)
+
+        self.decoder_norm0_1 = ConvELUBlock(
+            256, 256, 5, padding=2)
+
+        self.decoder_norm1_0 = ConvTransposeELUBlock(
+            256, 128, 4, stride=2, padding=1)
+
+        self.decoder_norm1_1 = ConvELUBlock(
+            128, 128, 5, padding=2)
+        self.decoder_norm1_0 = ConvTransposeELUBlock(
+            256, 128, 4, stride=2, padding=1)
+        self.decoder_norm1_2 = ConvELUBlock(
+            128, 64, 1)
+        self.normal_prediction = ConvELUBlock(64, 3, 3, padding=1)
+
+    def forward(self, x):
+        decoder_norm0_0_out = self.decoder_norm0_0(x)
+        decoder_norm0_1_out = self.decoder_norm0_1(decoder_norm0_0_out)
+        decoder_norm1_0_out = self.decoder_norm1_0(decoder_norm0_1_out)
+        decoder_norm1_1_out = self.decoder_norm1_1(decoder_norm1_0_out)
+        decoder_norm1_2_out = self.decoder_norm1_2(decoder_norm1_1_out)
+        pred_normals = self.normal_prediction(decoder_norm1_2_out)
+        return F.tanh(pred_normals)
+
+
+class NormalsEmbedding(nn.Module):
+    def __init__(self, in_channels, activation=torch.tanh):
+        super(NormalsEmbedding, self).__init__()
+        self.cov1 = ConvELUBlock(in_channels + 3, 16, 3, padding=1)
+        self.cov2 = ConvELUBlock(in_channels + 3, 16, 3, padding=2, dilation=2)
+        self.emb = nn.Conv2d(32, 3, 1)
+        self.activation = activation
+        height = 256
+        width = 512
+        self.to3d = Depth2Points(height, width)
+        self.dirs = nn.Parameter(-self.to3d(torch.ones((1, 1, height, width))), requires_grad=False)
+        # self.coords = torch.from_numpy(np.mgrid[0:height, 0:width]).float()
+
+        # self.coords = nn.Parameter(torch.reshape(self.coords, (1, 2, height, width)),
+        #    requires_grad=False)
+
+    def forward(self, x):
+        b_size = x.size(0)
+        with torch.no_grad():
+            # coords = torch.cat([self.coords for i in range(b_size)], dim=0)
+            # print(coords.size())
+            dirs = torch.cat([self.dirs for i in range(b_size)], dim=0)
+        x = torch.cat((dirs, x), dim=1)
+        # print(x, x.size())
+        out1 = self.cov1(x)
+        out2 = self.cov2(x)
+        out = self.emb(torch.cat((out1, out2), dim=1))
+        if self.activation is not None:
+            return self.activation(out)
+        else:
+            return out
+
+
+class ExpSegNormals(nn.Module):
+    def __init__(self, in_channels, normal_activation=expSphere):
+        super(ExpSegNormals, self).__init__()
+        self.normals_emb = NormalsEmbedding(in_channels, activation=normal_activation)
+        self.cov1 = ConvELUBlock(64 + 3, 16, 3, padding=1)
+        self.cov2 = ConvELUBlock(64 + 3, 16, 3, padding=2, dilation=2)
+        self.class_pred = nn.Conv2d(32, 8, 1)
+        height = 256
+        width = 512
+        self.to3d = Depth2Points(height, width)
+        self.dirs = nn.Parameter(-self.to3d(torch.ones((1, 1, height, width))), requires_grad=False)
+
+    def forward(self, x):
+        b, _, h, w = x.size()
+        emb = self.normals_emb(x)
+
+        with torch.no_grad():
+            dirs = torch.cat([self.dirs for i in range(b)], dim=0)
+        x = torch.cat((dirs, x), dim=1)
+        out1 = self.cov1(x)
+        out2 = self.cov2(x)
+        classes = self.class_pred(torch.cat((out1, out2), dim=1))
+
+        # normal inference
+        labels = torch.argmax(classes.detach(), dim=1, keepdim=True)
+        signs = labelToSign(labels)
+        normals = emb * signs
+        return {
+            "normals": torch.reshape(normals, (b, 3, h, w)),
+            "normals_embedding": emb,
+            "normals_classes": classes
+        }
+
+
 class RectNet(nn.Module):
 
     def __init__(self, in_channels, cspn=False, reflection_pad=False,
                  normal_est=False, segmentation_est=False, plane_param_es=False,
-                 calc_planes=False):
+                 calc_planes=False, normals_est_type='standart'):
         super(RectNet, self).__init__()
 
         # Network definition
@@ -215,27 +377,19 @@ class RectNet(nn.Module):
         self.calc_normals = normal_est
         self.calc_plane_params = plane_param_es
         self.calc_planes = calc_planes
+        self.normals_type = normals_est_type
         if self.calc_normals or self.calc_plane_params:
-            # self.decoder_norm0_0 = ConvTransposeELUBlock(
-            #     512, 256, 4, stride=2, padding=1, reflection_pad=reflection_pad)
+            if self.normals_type == "standart":
+                self.normals = NormalsEmbedding(in_channels=64)
+            elif self.normals_type == "sphere":
+                self.normals = ExpSegNormals(in_channels=64)
+            elif self.normals_type == "plane":
+                self.normals = NormalsEmbedding(in_channels=64, activation=None)
+            elif self.normals_type == "deep":
+                self.normals = NormalsDeepEmbedding(in_channels=512)
+            else:
+                raise ValueError("Unknown type of normal prediction module")
 
-            # self.decoder_norm0_1 = ConvELUBlock(
-            #     256, 256, 5, padding=2, reflection_pad=reflection_pad)
-
-            # self.decoder_norm1_0 = ConvTransposeELUBlock(
-            #     256, 128, 4, stride=2, padding=1, reflection_pad=reflection_pad)
-
-            # self.decoder_norm1_1 = ConvELUBlock(
-            #     128, 128, 5, padding=2, reflection_pad=reflection_pad)
-            # self.decoder_norm1_0 = ConvTransposeELUBlock(
-            #     256, 128, 4, stride=2, padding=1, reflection_pad=reflection_pad)
-            # self.decoder_norm1_2 = ConvELUBlock(
-            #     128, 64, 1, reflection_pad=reflection_pad)
-            # self.normal_prediction = ConvELUBlock(64, 3, 3, padding=1)
-
-            self.normal_cov1 = ConvELUBlock(64, 16, 3, padding=1)
-            self.normal_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
-            self.normal_cov3 = nn.Conv2d(32, 3, 1)
         self.calc_segmentation = segmentation_est
         if self.calc_segmentation:
             self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
@@ -332,24 +486,23 @@ class RectNet(nn.Module):
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
         if self.calc_normals or self.calc_plane_params:
-            normal1 = self.normal_cov1(decoder1_2_out)
-            normal2 = self.normal_cov2(decoder1_2_out)
-            normal_cat = torch.cat((normal1, normal2), 1)
-            pred_normals = self.normal_cov3(normal_cat)
-
-            # decoder_norm0_0_out = self.decoder_norm0_0(encoder2_2_out)
-            # decoder_norm0_1_out = self.decoder_norm0_1(decoder_norm0_0_out)
-            # decoder_norm1_0_out = self.decoder_norm1_0(decoder_norm0_1_out)
-            # decoder_norm1_1_out = self.decoder_norm1_1(decoder_norm1_0_out)
-            # decoder_norm1_2_out = self.decoder_norm1_2(decoder_norm1_1_out)
-            # pred_normals = self.normal_prediction(decoder_norm1_2_out)
-            # norm = torch.norm(pred_normals, p=None, keepdim=True, dim=1)
-            # print(norm.size())
-            if self.calc_normals:
-                pred_normals = torch.tanh(pred_normals)
-                outputs["normals"] = pred_normals
+            if self.normals_type == 'deep':
+                normals_input = encoder2_2_out
             else:
-                outputs["PlaneParams"] = pred_normals
+                normals_input = decoder1_2_out
+
+            if self.normals_type == "sphere":
+                res = self.normals(normals_input)
+                pred_normals = res["normals"]
+                pred_normals_embed = res["normals_embedding"]
+                outputs["normals_classes"] = res["normals_classes"]
+            else:
+                res = self.normals(normals_input)
+                pred_normals = res
+                pred_normals_embed = res
+
+            outputs["normals_emb"] = pred_normals_embed
+            outputs["normals"] = pred_normals
 
             # print(pred_normals.size())
 
@@ -372,6 +525,12 @@ class RectNet(nn.Module):
         data = AnnotatedData()
         if "normals" in outputs:
             data.add(outputs["normals"], DataType.Normals)
+
+        if "normals_classes" in outputs:
+            data.add(outputs["normals_classes"], DataType.NormalsClass)
+
+        if "normals_emb" in outputs:
+            data.add(outputs["normals_emb"], DataType.NormalsEmbed)
 
         if "PlaneParams" in outputs:
             data.add(outputs["PlaneParams"], DataType.PlaneParams)

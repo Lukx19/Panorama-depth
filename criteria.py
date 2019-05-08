@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from annotated_data import DataType
-from network import Depth2Points, planeAwarePooling, toPlaneParams
+from network import Depth2Points, planeAwarePooling, toPlaneParams, signToLabel
+from util import mergeInDict
 
 
 class Sobel(nn.Module):
@@ -305,8 +306,8 @@ class NormSegLoss(nn.Module):
         depth_total_loss = self.depth_loss(predictions, data)
 
         mask = data.get(DataType.Mask, scale=1)[0]
-        gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
-        pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
+        gt_seg = data.get(DataType.PlanarSegmentation)[0]
+        pred_seg = predictions.get(DataType.PlanarSegmentation)[0]
 
         validMean = createValidMean(mask)
 
@@ -319,11 +320,86 @@ class NormSegLoss(nn.Module):
         return depth_total_loss + seg_total_loss + normals_loss
 
 
+class SphericalNormalsLoss(nn.Module):
+    def __init__(self):
+        super(SphericalNormalsLoss, self).__init__()
+
+    def forward(self, predictions, data):
+        losses = {}
+        histograms = {}
+        planes = data.get(DataType.Planes, scale=1)[0]
+        # 1= pixels where are some planes 0 = otherwise
+        # plane_mask = torch.sign(torch.sum(planes, dim=1))
+        mask = data.get(DataType.Mask, scale=1)[0]
+        gt_normals = data.get(DataType.Normals)[0]
+        pred_normals_emb = predictions.get(DataType.NormalsEmbed)[0] * mask
+        pred_classes = predictions.get(DataType.NormalsClass)[0]
+        gt_normals_emb = torch.abs(gt_normals) * mask
+        gt_classes = signToLabel(gt_normals)
+
+        planeMean = createPlaneMean(mask, planes)
+
+        # pred_normals are in range [0,1] calculate cosine similarity
+        regression_loss = cosineLoss(pred_normals_emb, gt_normals_emb, dim=1, mean_fce=None)
+        histograms["plane_normal_regression"] = regression_loss.detach()
+        regression_loss = planeMean(regression_loss)
+        losses["plane_normal_regression"] = regression_loss
+
+        # classification of normal signs
+        class_loss = F.cross_entropy(pred_classes, gt_classes, reduction='none')
+        histograms["plane_normal_class"] = class_loss.detach()
+        losses["plane_normal_class"] = planeMean(class_loss)
+        return losses, histograms
+
+
+class CosineNormalsLoss(nn.Module):
+    def __init__(self):
+        super(CosineNormalsLoss, self).__init__()
+
+    def forward(self, predictions, data):
+        histograms = {}
+        losses = {}
+        mask = data.get(DataType.Mask, scale=1)[0]
+        # middle_mask = torch.zeros_like(mask)
+        # middle_mask[:, :, :, 138:370] = 1
+        planes = data.get(DataType.Planes, scale=1)[0]
+        # 1= pixels where are some planes 0 = otherwise
+        plane_mask = torch.sign(torch.sum(planes, dim=1))
+        gt_normals = data.get(DataType.Normals)[0] * mask
+        pred_normals = predictions.get(DataType.Normals)[0] * mask
+
+        b, _, h, w = pred_normals.size()
+        validMean = createValidMean(mask)
+        planeMean = createPlaneMean(mask, planes)
+        similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=None)
+        similarity *= plane_mask
+        histograms["Pixel_normal_similarity_loss"] = similarity.detach()
+        losses["Pixel_normal_similarity_loss"] = validMean(similarity)
+        losses["Plane_normal_similarity_loss"] = planeMean(similarity)
+
+        # plane_mask_ext = torch.reshape(plane_mask, (b, 1, h, w))
+        # pred_normals_2x = F.avg_pool2d(pred_normals * plane_mask_ext, kernel_size=3,
+        #                                padding=1, stride=2)
+        # with torch.no_grad():
+        #     gt_normals_2x = F.avg_pool2d(gt_normals * plane_mask_ext, kernel_size=3,
+        #                                  padding=1, stride=2)
+        #     plane_mask_2x = F.avg_pool2d(plane_mask, kernel_size=3, padding=1, stride=2)
+
+        # validMean2x = createValidMean(plane_mask_2x)
+        # similarity_2x = cosineLoss(pred_normals_2x, gt_normals_2x, dim=1, mean_fce=None)
+        # similarity_2x *= plane_mask_2x
+        # # histograms["Pixel_normal_similarity_2x"] = similarity_2x.detach()
+        # losses["Pixel_normal_similarity_2x"] = validMean2x(similarity_2x)
+
+        return losses, histograms
+
+
 class PlaneNormSegLoss(nn.Module):
-    def __init__(self, width=256, height=512):
+    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
         super(PlaneNormSegLoss, self).__init__()
-        self.to3d = Depth2Points(width, height)
+        self.to3d = Depth2Points(height, width)
         self.sobel = Sobel()
+        self.normal_loss = normal_loss
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -363,26 +439,8 @@ class PlaneNormSegLoss(nn.Module):
         seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
         losses["Segmentation_Loss"] = seg_total_loss
 
-        validMean = createValidMean(plane_mask)
+        # validMean = createValidMean(plane_mask)
         planeMean = createPlaneMean(mask, planes)
-
-        similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=None)
-        histograms["Pixel_normal_similarity_loss"] = similarity.detach()
-        losses["Pixel_normal_similarity_loss"] = validMean(similarity)
-        losses["Plane_normal_similarity_loss"] = planeMean(similarity)
-
-        plane_mask_ext = torch.reshape(plane_mask, (b, 1, h, w))
-        pred_normals_2x = F.avg_pool2d(pred_normals * plane_mask_ext, kernel_size=3,
-                                       padding=1, stride=2)
-        with torch.no_grad():
-            gt_normals_2x = F.avg_pool2d(gt_normals * plane_mask_ext, kernel_size=3,
-                                         padding=1, stride=2)
-            plane_mask_2x = F.avg_pool2d(plane_mask, kernel_size=3, padding=1, stride=2)
-
-        validMean2x = createValidMean(plane_mask_2x)
-        similarity_2x = cosineLoss(pred_normals_2x, gt_normals_2x, dim=1, mean_fce=None)
-        # histograms["Pixel_normal_similarity_2x"] = similarity_2x.detach()
-        losses["Pixel_normal_similarity_2x"] = validMean2x(similarity_2x)
 
         pred_points = self.to3d(pred_depth)
         with torch.no_grad():
@@ -391,12 +449,11 @@ class PlaneNormSegLoss(nn.Module):
         # TODO: Use ground truth points which are distance to plane and not GT distance in general.
         #  This should improve performance on low quality GT data
 
-        distace_to_gt_plane = torch.abs(torch.sum((pred_points - gt_points) * gt_normals, dim=1))
+        distace_to_gt_plane = (torch.sum((pred_points - gt_points) * gt_normals, dim=1)) ** 2
         distace_to_gt_plane *= plane_mask
-        # distace_to_gt_plane_l2 = l2Loss(distace_to_gt_plane,
-        #                                 torch.zeros_like(distace_to_gt_plane), None)
+
         histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach()
-        losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
+        # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
 
         losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
 
@@ -428,6 +485,9 @@ class PlaneNormSegLoss(nn.Module):
         # planeMean = createValidMean(plane_mask)
         # distance_loss_plane = l2Loss(-distance_pred_planes,
         #                              torch.zeros_like(distance_pred_planes), planeMean)
+        l, h = self.normal_loss(predictions, data)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
 
         return losses, histograms
 

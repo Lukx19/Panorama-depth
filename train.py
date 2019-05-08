@@ -22,7 +22,7 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 100
+visualization_freq = 500
 validation_sample_freq = -1
 
 model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(

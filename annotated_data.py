@@ -14,6 +14,8 @@ class DataType(Enum):
     Planes = 6
     Mask = 7
     PlaneParams = 8
+    NormalsClass = 9
+    NormalsEmbed = 10
 
 
 class AnnotatedData:

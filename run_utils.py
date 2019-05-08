@@ -1,7 +1,9 @@
 import torch
 import torch.nn as nn
 from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
-from criteria import GradLoss, MultiScaleL2Loss, NormSegLoss, PlaneNormSegLoss, PlaneParamsLoss
+from criteria import (GradLoss, MultiScaleL2Loss, NormSegLoss,
+                      PlaneNormSegLoss, PlaneParamsLoss, CosineNormalsLoss,
+                      SphericalNormalsLoss)
 import argparse
 import dataset
 from trainers import parse_data, parse_data_sparse_depth, genTotalLoss
@@ -31,6 +33,10 @@ def setupPipeline(network_type, loss_type, add_points):
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetSegNormals':
         model = RectNet(in_channels, cspn=False, normal_est=True, segmentation_est=True)
+
+    elif network_type == 'RectNetSphereNormals':
+        model = RectNet(in_channels, cspn=False, normal_est=True,
+                        segmentation_est=True, normals_est_type="sphere")
     elif network_type == 'RectNetPlaneParams':
         model = RectNet(in_channels, cspn=False, normal_est=False,
                         segmentation_est=False, plane_param_es=True)
@@ -59,12 +65,22 @@ def setupPipeline(network_type, loss_type, add_points):
         elif loss_type == "Revis_Normal_Seg":
             criterion = NormSegLoss()
         elif loss_type == "PlaneNormSegLoss":
-            criterion = PlaneNormSegLoss()
-            # mul_factors["Distance_Pred_Plane_Loss"] = 10.0
-            # mul_factors["Plane_Distance_Loss"] = 10.0
-            # mul_factors["Planar_Cosine_Loss"] = 3.0
+            normal_loss = CosineNormalsLoss()
+            criterion = PlaneNormSegLoss(normal_loss=normal_loss)
+            mul_factors["Plane_dist_plane_loss"] = 10.0
+            mul_factors["revis_l1_dist_1"] = 10.0
+            mul_factors["revis_l1_dist_2"] = 10.0
+            # mul_factors["Pixel_normal_similarity_2x"] = 0.0
+            # mul_factors["Plane_normal_similarity_loss"] = 0.0
+            # mul_factors["Segmentation_Loss"] = 0.0
         elif loss_type == "PlaneParamsLoss":
             criterion = PlaneParamsLoss()
+        elif loss_type == "PlaneNormClassSegLoss":
+            normal_loss = SphericalNormalsLoss()
+            criterion = PlaneNormSegLoss(normal_loss=normal_loss)
+            mul_factors["Plane_dist_plane_loss"] = 10.0
+            mul_factors["revis_l1_dist_1"] = 10.0
+            mul_factors["revis_l1_dist_2"] = 10.0
         else:
             assert False, 'Unsupported loss type'
     return model, (criterion, genTotalLoss(mul_factors)), parser, rgb_transformer, depth_transformer
