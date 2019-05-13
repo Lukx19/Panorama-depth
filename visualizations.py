@@ -203,6 +203,8 @@ def visualizePclDepth(results_dir):
     images = sorted(glob.glob(results_dir + "/*_color.jpg"))
     gt_depths = sorted(glob.glob(results_dir + "/*_gt_depth.tiff"))
     pred_depths = sorted(glob.glob(results_dir + "/*_pred_depth.tiff"))
+    if len(gt_depths) == 0:
+        gt_depths = pred_depths
     # print(results_dir+"/*_color.jpg")
     # print(images, gt_depths, pred_depths)
 

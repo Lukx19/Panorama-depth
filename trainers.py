@@ -123,47 +123,55 @@ def parse_data(raw_data):
     data.filenames = raw_data[1]
 
     rgb = data.get(DataType.Image, scale=1)[0]
-    gt_depth_1x = data.get(DataType.Depth, scale=1)[0]
+    gt_depth_1x = data.get(DataType.Depth, scale=1)
+    if len(gt_depth_1x):
+        gt_depth_1x = gt_depth_1x[0]
+        gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
+        gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
+        data.add(gt_depth_2x, DataType.Depth, scale=2)
+        data.add(gt_depth_4x, DataType.Depth, scale=4)
 
-    gt_depth_2x = F.interpolate(gt_depth_1x, scale_factor=0.5)
-    gt_depth_4x = F.interpolate(gt_depth_1x, scale_factor=0.25)
-    mask_1x = data.get(DataType.Mask, scale=1)[0]
-    mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
-    mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
+    mask_1x = data.get(DataType.Mask, scale=1)
+    if len(mask_1x):
+        mask_1x = mask_1x[0]
+        mask_2x = F.interpolate(mask_1x, scale_factor=0.5)
+        mask_4x = F.interpolate(mask_1x, scale_factor=0.25)
+        data.add(mask_2x, DataType.Mask, scale=2)
+        data.add(mask_4x, DataType.Mask, scale=4)
 
     inputs = {DataType.Image: rgb}
 
-    data.add(rgb, DataType.Image, scale=1)
-    data.add(gt_depth_1x, DataType.Depth, scale=1)
-    data.add(gt_depth_2x, DataType.Depth, scale=2)
-    data.add(gt_depth_4x, DataType.Depth, scale=4)
-    data.add(mask_1x, DataType.Mask, scale=1)
-    data.add(mask_2x, DataType.Mask, scale=2)
-    data.add(mask_4x, DataType.Mask, scale=4)
     return inputs, data
 
 
-def parse_data_sparse_depth(raw_data):
-    '''
-    Returns a list of the inputs as first output, a list of the GT as a second output,
-    and a list of the remaining info as a third output. Must be implemented.
-    '''
-    inputs, data = parse_data(raw_data)
+def genSparsePontsParser(empty_sparse_pts=False):
+    def parse_data_sparse_depth(raw_data):
+        '''
+        Returns a list of the inputs as first output, a list of the GT as a second output,
+        and a list of the remaining info as a third output. Must be implemented.
+        '''
+        inputs, data = parse_data(raw_data)
 
-    sparse_depth_1x = data.get(DataType.SparseDepth, scale=1)[0]
-    sparse_depth_2x = F.interpolate(sparse_depth_1x, scale_factor=0.5)
-    sparse_depth_4x = F.interpolate(sparse_depth_1x, scale_factor=0.25)
+        sparse_depth_1x = data.get(DataType.SparseDepth, scale=1)[0]
+        sparse_depth_2x = F.interpolate(sparse_depth_1x, scale_factor=0.5)
+        sparse_depth_4x = F.interpolate(sparse_depth_1x, scale_factor=0.25)
 
-    sparse_scales = {1: sparse_depth_1x, 2: sparse_depth_2x, 4: sparse_depth_4x}
+        sparse_scales = {1: sparse_depth_1x, 2: sparse_depth_2x, 4: sparse_depth_4x}
+        if empty_sparse_pts:
+            sparse_scales = {
+                1: torch.zeros_like(sparse_depth_1x),
+                2: torch.zeros_like(sparse_depth_2x),
+                4: torch.zeros_like(sparse_depth_4x)
+            }
+        inputs[DataType.SparseDepth] = sparse_scales
+        inputs[DataType.Planes] = data.get(DataType.Planes, scale=1)
 
-    inputs[DataType.SparseDepth] = sparse_scales
-    inputs[DataType.Planes] = data.get(DataType.Planes, scale=1)
+        data.add(sparse_scales[1], DataType.SparseDepth, scale=1)
+        data.add(sparse_scales[2], DataType.SparseDepth, scale=2)
+        data.add(sparse_scales[4], DataType.SparseDepth, scale=4)
 
-    data.add(sparse_depth_1x, DataType.SparseDepth, scale=1)
-    data.add(sparse_depth_2x, DataType.SparseDepth, scale=2)
-    data.add(sparse_depth_4x, DataType.SparseDepth, scale=4)
-
-    return inputs, data
+        return inputs, data
+    return parse_data_sparse_depth
 
 
 def save_samples_default(data, outputs, results_dir):
@@ -186,11 +194,12 @@ def save_saples_for_pcl(data, outputs, results_dir):
         name = d.filenames[i]
         # print(name)
         name = osp.join(results_dir, name)
-        gt = d.get(DataType.Depth, scale=1)[0][i]
         prediction = o[i]
         img = d.get(DataType.Image, scale=1)[0][i]
 
-        saveTensorDepth(name + "_gt_depth", gt, 1)
+        gt = d.get(DataType.Depth, scale=1)
+        if len(gt):
+            saveTensorDepth(name + "_gt_depth", gt[0][i], 1)
         saveTensorDepth(name + "_pred_depth", prediction, 1)
 
         sparse_points = d.get(DataType.SparseDepth, scale=1)
@@ -418,7 +427,10 @@ class MonoTrainer(object):
                 self.print_batch_report(batch_num)
                 resetAverageMeters(self.loss_meters)
 
-    def validate(self, checkpoint_path=None, save_all_predictions=False):
+    def predict(self, checkpoint_path):
+        self.validate(checkpoint_path, save_all_predictions=True, calc_metrics=False)
+
+    def validate(self, checkpoint_path=None, save_all_predictions=False, calc_metrics=True):
         print('Validating model....')
 
         if checkpoint_path is not None:
@@ -445,7 +457,8 @@ class MonoTrainer(object):
                 output = self.annotate_outputs(self.forward_pass(inputs))
 
                 # Compute the evaluation metrics
-                self.compute_eval_metrics(output, data)
+                if calc_metrics:
+                    self.compute_eval_metrics(output, data)
                 if save_all_predictions:
                     self.save_samples(data, output, self.checkpoint_dir)
                 else:
@@ -462,7 +475,6 @@ class MonoTrainer(object):
         return report
 
     def train(self, checkpoint_path=None, weights_only=False):
-        print('Starting training')
 
         # Load pretrained parameters if desired
         if checkpoint_path is not None:
@@ -473,7 +485,8 @@ class MonoTrainer(object):
             # Initialize any training visualizations
             self.initialize_visualizations()
         # make sure that validation is correct without bugs
-        self.validate()
+        # self.validate()
+        print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
 

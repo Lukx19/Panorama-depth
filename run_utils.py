@@ -6,17 +6,17 @@ from criteria import (GradLoss, MultiScaleL2Loss, NormSegLoss,
                       SphericalNormalsLoss)
 import argparse
 import dataset
-from trainers import parse_data, parse_data_sparse_depth, genTotalLoss
+from trainers import parse_data, genSparsePontsParser, genTotalLoss
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 
 
-def setupPipeline(network_type, loss_type, add_points):
+def setupPipeline(network_type, loss_type, add_points, empty_points):
     in_channels = 3
     parser = parse_data
     if add_points:
         in_channels = 4
-        parser = parse_data_sparse_depth
+        parser = genSparsePontsParser(empty_points)
 
     rgb_transformer = dataset.default_transformer
     depth_transformer = dataset.default_depth_transformer
@@ -37,9 +37,10 @@ def setupPipeline(network_type, loss_type, add_points):
     elif network_type == 'RectNetSphereNormals':
         model = RectNet(in_channels, cspn=False, normal_est=True,
                         segmentation_est=True, normals_est_type="sphere")
-    elif network_type == 'RectNetPlaneParams':
-        model = RectNet(in_channels, cspn=False, normal_est=False,
-                        segmentation_est=False, plane_param_es=True)
+    elif network_type == 'RectNetPlanes':
+        model = RectNet(in_channels, cspn=False, normal_est=True,
+                        segmentation_est=True, plane_param_es=True,
+                        normals_est_type="sphere")
     elif network_type == 'RectNetPad':
         model = RectNet(in_channels, cspn=False, reflection_pad=True)
         alpha_list = [0.535, 0.272]
@@ -70,9 +71,9 @@ def setupPipeline(network_type, loss_type, add_points):
             mul_factors["Plane_dist_plane_loss"] = 10.0
             mul_factors["revis_l1_dist_1"] = 10.0
             mul_factors["revis_l1_dist_2"] = 10.0
-            # mul_factors["Pixel_normal_similarity_2x"] = 0.0
-            # mul_factors["Plane_normal_similarity_loss"] = 0.0
-            # mul_factors["Segmentation_Loss"] = 0.0
+            mul_factors["Pixel_normal_similarity_loss"] = 0.0
+            mul_factors["Plane_normal_similarity_loss"] = 0.0
+            mul_factors["Segmentation_Loss"] = 0.0
         elif loss_type == "PlaneParamsLoss":
             criterion = PlaneParamsLoss()
         elif loss_type == "PlaneNormClassSegLoss":
@@ -86,7 +87,7 @@ def setupPipeline(network_type, loss_type, add_points):
     return model, (criterion, genTotalLoss(mul_factors)), parser, rgb_transformer, depth_transformer
 
 
-def parseArgs(test=False):
+def parseArgs(test=False, predict=False):
     description = 'Training script for Panodepth training procedure'
     if test:
         description = 'Testing script for Panodepth'
@@ -101,6 +102,9 @@ def parseArgs(test=False):
 
     parser.add_argument('--add_points', action="store_true", default=False,
                         help='In addition to monocular image also add sparse points to training.')
+
+    parser.add_argument('--empty_points', action="store_true", default=False,
+                        help='Make channel with sparse points empty')
 
     parser.add_argument('--load_normals', action="store_true", default=False,
                         help='Load normals from dataset')
@@ -126,6 +130,14 @@ def parseArgs(test=False):
 
         parser.add_argument('--save_results', action="store_true", default=False,
                             help='Save all generated outputs and inputs')
+    elif predict:
+        parser.add_argument('--image_folder', type=str,
+                            default="./",
+                            help='Path to folder with images used for depth prediction')
+
+        parser.add_argument('--checkpoint', type=str, default=None,
+                            help='Path to checkpoint. Default checkpoint is used based \
+                            on experiment folder and best model in this folder')
     else:
         parser.add_argument('--train_list', type=str,
                             default="./data_splits/original_p100_d20_train_split.txt",

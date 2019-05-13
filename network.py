@@ -300,7 +300,7 @@ class ExpSegNormals(nn.Module):
 class RectNet(nn.Module):
 
     def __init__(self, in_channels, cspn=False, reflection_pad=False,
-                 normal_est=False, segmentation_est=False, plane_param_es=False,
+                 normal_est=False, segmentation_est=False,
                  calc_planes=False, normals_est_type='standart'):
         super(RectNet, self).__init__()
 
@@ -375,10 +375,13 @@ class RectNet(nn.Module):
             self.cspn = CSPN()
 
         self.calc_normals = normal_est
-        self.calc_plane_params = plane_param_es
         self.calc_planes = calc_planes
+        self.calc_segmentation = segmentation_est
+        if self.calc_planes:
+            self.calc_normals = True
+            self.calc_segmentation = True
         self.normals_type = normals_est_type
-        if self.calc_normals or self.calc_plane_params:
+        if self.calc_normals:
             if self.normals_type == "standart":
                 self.normals = NormalsEmbedding(in_channels=64)
             elif self.normals_type == "sphere":
@@ -390,7 +393,6 @@ class RectNet(nn.Module):
             else:
                 raise ValueError("Unknown type of normal prediction module")
 
-        self.calc_segmentation = segmentation_est
         if self.calc_segmentation:
             self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
             self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
@@ -513,11 +515,11 @@ class RectNet(nn.Module):
             pred_seg = self.seg_cov3(seg_cat)
             outputs["segmentation"] = pred_seg
 
-        if (self.calc_normals and self.calc_planes
-                and DataType.Planes in inputs and self.calc_segmentation):
+        if (self.calc_normals and self.calc_planes and
+                DataType.Planes in inputs and self.calc_segmentation):
             planes = inputs[DataType.Planes]
-            outputs["depth_planar"] = self.planar_to_depth(opt_depth, planes,
-                                                           pred_seg, pred_normals)
+            outputs["depth1x"] = self.planar_to_depth(opt_depth, planes,
+                                                      pred_seg, pred_normals)
 
         return outputs
 

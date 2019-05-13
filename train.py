@@ -26,7 +26,7 @@ visualization_freq = 500
 validation_sample_freq = -1
 
 model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(
-    args.network_type, args.loss_type, args.add_points)
+    args.network_type, args.loss_type, args.add_points, args.empty_points)
 
 network, criterion, device = setupGPUDevices(
     gpus_list=args.gpu_ids, model=model, criterion=criterion)

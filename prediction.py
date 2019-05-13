@@ -2,7 +2,7 @@ import torch
 
 
 from trainers import MonoTrainer, save_saples_for_pcl
-from dataset import OmniDepthDataset
+from dataset import OmniDepthDataset, ImageDataset, prediction_rgb_trasformer
 
 import json
 import os
@@ -14,8 +14,8 @@ from run_utils import parseArgs, setupPipeline, setupGPUDevices
 # --------------
 
 
-def test(experiment_name=None):
-    args = parseArgs(test=True)
+def predict(experiment_name=None):
+    args = parseArgs(predict=True)
     torch.manual_seed(19)
     checkpoint = args.checkpoint
     if experiment_name is None:
@@ -34,10 +34,10 @@ def test(experiment_name=None):
 
     print("Using checkpoint ", checkpoint)
 
-    results_dir = osp.join(experiment_folder, "./results/")
+    results_dir = osp.join(experiment_folder, "./predictions/")
     os.makedirs(results_dir, exist_ok=True)
 
-    with open(osp.join(results_dir, 'test_args.txt'), 'w') as f:
+    with open(osp.join(results_dir, 'predict_args.txt'), 'w') as f:
         json.dump(args.__dict__, f, indent=2)
         print(json.dumps(args.__dict__, indent=2))
 
@@ -46,20 +46,16 @@ def test(experiment_name=None):
     validation_sample_freq = -1
 
     model, _, parser, image_transformer, depth_transformer = setupPipeline(
-        network_type=args.network_type, loss_type=None, add_points=args.add_points, empty_points=args.empty_points)
+        network_type=args.network_type, loss_type=None, add_points=args.add_points,
+        empty_points=args.empty_points)
 
     network, _, device = setupGPUDevices(
         gpus_list=args.gpu_ids, model=model, criterion=None)
 
     test_dataloader = torch.utils.data.DataLoader(
-        dataset=OmniDepthDataset(
-            root_path=args.dataset_dir,
-            path_to_img_list=args.test_list,
-            use_sparse_pts=args.add_points,
-            transformer_depth=depth_transformer,
-            transformer_rgb=image_transformer,
-            use_normals=args.load_normals,
-            use_planes=args.load_planes,
+        dataset=ImageDataset(
+            image_folder=args.image_folder,
+            transformer_rgb=prediction_rgb_trasformer
         ),
         batch_size=1,
         shuffle=False,
@@ -84,12 +80,8 @@ def test(experiment_name=None):
         visualization_freq=visualization_freq,
         validation_sample_freq=validation_sample_freq)
 
-    report = trainer.validate(
-        checkpoint_path=checkpoint, save_all_predictions=args.save_results)
-
-    with open(osp.join(results_dir, 'metrics.txt'), 'w') as f:
-        f.write(report)
+    trainer.predict(checkpoint_path=checkpoint)
 
 
 if __name__ == "__main__":
-    test()
+    predict()

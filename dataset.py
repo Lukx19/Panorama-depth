@@ -12,6 +12,7 @@ from PIL import Image
 import os.path as osp
 from util import read_tiff
 from annotated_data import DataType
+from glob import glob
 
 
 def pad_tensor(tensor, pad, dim):
@@ -99,6 +100,9 @@ class ToTensor(object):
 #  converts to tensor and normalizes to [0,1] range
 default_transformer = transforms.Compose([ToTensor(scale=True)])
 default_depth_transformer = transforms.Compose([ToTensor(scale=False)])
+prediction_rgb_trasformer = transforms.Compose([
+    transforms.Resize(size=(256, 512)),
+    ToTensor(scale=True)])
 
 imagenet_transformer = transforms.Compose([
     ToTensor(scale=True),
@@ -247,3 +251,28 @@ class OmniDepthDataset(torch.utils.data.Dataset):
             return planes2
         else:
             raise ValueError("File missing", path)
+
+
+class ImageDataset(torch.utils.data.Dataset):
+    '''PyTorch dataset module for effiicient loading'''
+
+    def __init__(self, image_folder, transformer_rgb=default_transformer):
+
+        # Create tuples of inputs/GT
+        self.images = glob(image_folder + "/**/*.jpg", recursive=True)
+        self.transformer_rgb = transformer_rgb
+
+    def __getitem__(self, idx):
+        '''Load the data'''
+        basename = osp.splitext(osp.basename(self.images[idx]))[0]
+        data = {}
+        original_rgb = Image.open(self.images[idx])
+        rgb = self.transformer_rgb(original_rgb)
+        data[DataType.Image] = rgb
+        _, h, w = rgb.size()
+        data[DataType.SparseDepth] = torch.zeros((1, h, w))
+        return [data, basename]
+
+    def __len__(self):
+        '''Return the size of this dataset'''
+        return len(self.images)
