@@ -312,7 +312,6 @@ class MonoTrainer(object):
 
         # Track the best inlier ratio recorded so far
         self.best_d1_inlier = 0.0
-        self.is_best = False
 
         # List of length 2 [Visdom instance, env]
         self.vis = visdom
@@ -412,7 +411,7 @@ class MonoTrainer(object):
             self.updateLossMeters(raw_loss, loss)
 
             if batch_num % self.batch_checkoint_freq == 0:
-                self.save_checkpoint()
+                self.save_checkpoint(is_best=False)
             # Every few batches
             if batch_num % self.visualization_freq == 0:
                 dict_loss = {}
@@ -471,8 +470,8 @@ class MonoTrainer(object):
 
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
-        report = self.print_validation_report()
-        return report
+        report, is_best = self.print_validation_report()
+        return report, is_best
 
     def train(self, checkpoint_path=None, weights_only=False):
 
@@ -498,8 +497,13 @@ class MonoTrainer(object):
             self.train_one_epoch()
 
             if self.epoch % self.validation_freq == 0:
+                is_best = False
                 self.validate()
-                self.save_checkpoint()
+                # Also update the best state tracker
+                if self.best_d1_inlier < self.d1_inlier_meter.avg:
+                    self.best_d1_inlier = self.d1_inlier_meter.avg
+                    is_best = True
+                self.save_checkpoint(is_best)
                 self.visualize_metrics()
 
     def reset_eval_metrics(self):
@@ -514,7 +518,6 @@ class MonoTrainer(object):
         self.d2_inlier_meter.reset()
         self.d3_inlier_meter.reset()
         self.sparse_abs_rel_error_meter.reset()
-        self.is_best = False
 
     def compute_eval_metrics(self, output, data):
         '''
@@ -886,13 +889,9 @@ class MonoTrainer(object):
                       self.sparse_abs_rel_error_meter.avg))
 
         print(report)
-        # Also update the best state tracker
-        if self.best_d1_inlier < self.d1_inlier_meter.avg:
-            self.best_d1_inlier = self.d1_inlier_meter.avg
-            self.is_best = True
         return report
 
-    def save_checkpoint(self):
+    def save_checkpoint(self, is_best):
         '''
         Saves the model state
         '''
@@ -917,7 +916,7 @@ class MonoTrainer(object):
                 'loss_meters': serializeAverageMeters(self.loss_meters),
                 'best_d1_inlier': self.best_d1_inlier
             },
-            self.is_best,
+            is_best,
             filename=checkpoint_path)
 
         # Copies the latest checkpoint to another file stored for each epoch
