@@ -470,8 +470,8 @@ class MonoTrainer(object):
 
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
-        report, is_best = self.print_validation_report()
-        return report, is_best
+        report = self.print_validation_report()
+        return report
 
     def train(self, checkpoint_path=None, weights_only=False):
 
