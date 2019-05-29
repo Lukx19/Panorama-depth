@@ -8,7 +8,7 @@ import torch.utils.data
 import torchvision.transforms as transforms
 
 import numpy as np
-from PIL import Image
+from PIL import Image, ImageOps
 import os.path as osp
 from util import read_tiff
 from annotated_data import DataType
@@ -97,10 +97,24 @@ class ToTensor(object):
             return image.permute(2, 0, 1)
 
 
+class Normalize(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, image):
+        return ImageOps.equalize(image)
+
+
 #  converts to tensor and normalizes to [0,1] range
-default_transformer = transforms.Compose([ToTensor(scale=True)])
+default_transformer = transforms.Compose([
+    # Normalize(),
+    ToTensor(scale=True),
+    # transforms.Normalize(mean=[0.485, 0.456, 0.406],
+    #                      std=[0.229, 0.224, 0.225])
+])
 default_depth_transformer = transforms.Compose([ToTensor(scale=False)])
 prediction_rgb_trasformer = transforms.Compose([
+    # Normalize(),
     transforms.Resize(size=(256, 512)),
     ToTensor(scale=True)])
 
@@ -155,8 +169,8 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
         # read EXR convert to numpy and convert to PIL. Then apply transformation.
         depth = self.readDepthPano(osp.join(self.root_path, relative_paths[1]))
-        depth_mask = ((depth <= self.max_depth)
-                      & (depth > 0.)).astype(np.uint8)
+        depth_mask = ((depth <= self.max_depth) &
+                      (depth > 0.)).astype(np.uint8)
         # Threshold depths
         depth *= depth_mask
 
