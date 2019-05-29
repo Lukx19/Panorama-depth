@@ -79,19 +79,45 @@ class L2Loss(nn.Module):
         return error.sum() / (mask > 0).sum().float()
 
 
-def createValidMean(mask):
+def createValidMean(mask, adaptive=False):
     valid_pixels = (mask > 0).sum().float()
 
     def validMean(val):
         # print(mask.size(), val.size())
-        val = torch.sum(mask * val)
+        count_pixels = valid_pixels
+        val = mask * val
+        if adaptive:
+            with torch.no_grad():
+                max_p, _ = torch.max(val, dim=1, keepdim=True)
+                tresholds = 0.75 * max_p
+                error_mask = torch.zeros_like(val)
+                error_mask[val > tresholds] = 1
+                count_pixels = torch.sum(error_mask)
+
+        val = torch.sum(val)
         # print(val.size())
-        return val / (valid_pixels)
+        return val / (count_pixels)
 
     return validMean
 
 
-def createPlaneMean(mask, planes):
+def createPlaneMean(mask: torch.Tensor, planes, adaptive=False):
+    """Creates a function which can calculate a mean over plane instance.
+
+    Parameters
+    ----------
+    mask : Tensor
+        pixels excluded from loss calculation
+    planes : Tensor BxPx...
+        Plane instance masks
+    adaptive : bool, optional
+        Calculates mean only over the most loss heavy pixels, by default False
+
+    Returns
+    -------
+    function
+        Mean function
+    """
     b, p = planes.size()[0:2]
     # valid_pixels = torch.sum(planes * mask)
     planes = torch.reshape(planes, (b, p, -1))
@@ -103,10 +129,27 @@ def createPlaneMean(mask, planes):
     valid_per_plane[valid_per_plane < 0.0001] = 1
 
     def mean(val):
+        count_per_plane = valid_per_plane
+        count_planes_in_batches = valid_planes_in_batches
         val = torch.reshape(val, (b, 1, -1))
+        planar_val = planes * val
         # B x P
-        summed = torch.sum(planes * val, dim=2)
-        return torch.sum(summed / valid_per_plane) / valid_planes_in_batches
+        if adaptive:
+            with torch.no_grad():
+                max_p, _ = torch.max(planar_val, dim=2, keepdim=True)
+                tresholds = 0.75 * max_p
+                error_mask = torch.zeros_like(planar_val)
+                error_mask[planar_val > tresholds] = 1
+
+                count_per_plane = torch.sum(error_mask, dim=2)
+                count_planes_in_batches = torch.sum(torch.sign(valid_per_plane))
+                count_per_plane[count_per_plane < 0.0001] = 1
+            planar_val = planar_val * error_mask
+            summed = torch.sum(planar_val, dim=2)
+        else:
+            summed = torch.sum(planar_val, dim=2)
+
+        return torch.sum(summed / count_per_plane) / count_planes_in_batches
 
     return mean
 
@@ -214,7 +257,7 @@ class MultiScaleL2Loss(nn.Module):
         return depth_error
 
 
-def revisLoss(pred, gt, mask, sobel):
+def revisLoss(pred, gt, mask, sobel, adaptive=False):
     b, _, h, w = pred.size()
     ones = pred.new_ones(b, 1, h, w)
     histograms = {}
@@ -239,7 +282,7 @@ def revisLoss(pred, gt, mask, sobel):
     output_normal = torch.cat(
         (-output_grad_dx, -output_grad_dy, ones), 1)
 
-    validMean = createValidMean(mask)
+    validMean = createValidMean(mask, adaptive=adaptive)
     #  L1 loss on depth distances
     loss_depth = torch.log(l1Loss(pred, gt) + 1)
     histograms["revis_l1_dist"] = loss_depth.detach()
@@ -271,28 +314,31 @@ def sumLosses(losses):
 
 class GradLoss(nn.Module):
 
-    def __init__(self, all_levels=False):
+    def __init__(self, all_levels=False,adaptive=False):
 
         super(GradLoss, self).__init__()
-        self.get_gradient = Sobel()
+        self.sobel = Sobel()
         self.l2_loss = L2Loss()
         self.all_levels = all_levels
+        self.adaptive = adaptive
 
     def forward(self, predictions, data):
-        total_loss = 0
+        losses = {}
+        histograms = {}
         for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
-
             gt = data.get(DataType.Depth, scale=scale)[0]
             mask = data.get(DataType.Mask, scale=scale)[0]
-            b, _, w, h = pred.size()
-            # print(scale, pred.size(), gt.size(), mask.size())
             if i == 0 or self.all_levels:
-                losses, _ = revisLoss(pred, gt, mask, self.get_gradient)
-                total_loss += sumLosses(losses)
-            else:
-                total_loss += self.l2_loss(pred, gt, mask)
+                revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel, self.adaptive)
+                for key, loss in revis_losses.items():
+                    losses[key + "_" + str(scale)] = loss
 
-        return total_loss
+                for key, hist in revis_hist.items():
+                    histograms[key + "_" + str(scale)] = hist
+            else:
+                l2_loss = self.l2_loss(pred, gt, mask)
+                losses["revis_l2" + "_" + str(scale)] = l2_loss
+        return losses, histograms
 
 
 class NormSegLoss(nn.Module):
@@ -456,26 +502,30 @@ class PlaneNormSegLoss(nn.Module):
         # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
 
         losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
+        planeMean = createPlaneMean(mask, planes, adaptive=True)
+        losses["Plane_dist_plane_loss_Ad"] = planeMean(distace_to_gt_plane)
 
         # distance_loss2 = l1Loss(-distace_to_pred_plane,
         # torch.zeros_like(distace_to_pred_plane), validMean)
 
         #  This losses look at all normals of one plane and create plane parameters
-        # planes_ext, avg_gt_normal = None, None
-        # pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
-        # gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
-        # gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
-        # pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
-        # with torch.no_grad():
-        #     planes = data.get(DataType.Planes, scale=1)[0]
-        #     planes = planes * mask
-        #     b, p, h, w = planes.size()
-        #     planes = torch.reshape(planes, (b, p, 1, -1))
-        #     planes_ext = torch.cat((planes, planes, planes), dim=2)
-        #     avg_gt_normal = planeAwarePooling(gt_normals, planes)
+        avg_gt_normal = None
+        pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
+        gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
+        gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
+        pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
+        with torch.no_grad():
+            planes = data.get(DataType.Planes, scale=1)[0]
+            planes = planes * mask
+            b, p, h, w = planes.size()
+            planes = torch.reshape(planes, (b, p, 1, -1))
+            # planes_ext = torch.cat((planes, planes, planes), dim=2)
+            avg_gt_normal = planeAwarePooling(gt_normals, planes)
 
-        # avg_pred_normal = planeAwarePooling(pred_normals, planes)
-        # similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=torch.mean)
+        avg_pred_normal = planeAwarePooling(pred_normals, planes)
+        similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=None)
+        # histograms["Plane_normal_loss"] = similarity_planar.detach()
+        losses["Plane_normal_loss"] = torch.mean(similarity_planar)
 
         # distance_pred_planes = planes_ext * (gt_points - pred_points)
 
@@ -516,7 +566,7 @@ class PlaneParamsLoss(nn.Module):
         # print(pred_planes_params.size(), gt_planes_params.size())
         validMean = createValidMean(plane_mask)
 
-        diff_loss1x = l1Loss(pred_depth, gt_depth, validMean)
+        # diff_loss1x = l1Loss(pred_depth, gt_depth, validMean)
         param_loss = l1Loss(pred_planes_params, gt_planes_params, mean_fce=validMean, dim=1)
         similarity = cosineLoss(pred_planes_params, gt_planes_params, dim=1, mean_fce=validMean)
 

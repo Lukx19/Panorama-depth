@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from util import xavier_init
 from annotated_data import AnnotatedData, DataType
 import numpy as np
+# from mean_shift import Bin_Mean_Shift
 
 # @inproceedings{cheng2018depth,
 #   title={Learning Depth with Convolutional Spatial Propagation Network},
@@ -196,8 +197,13 @@ def expSphere(x):
     # Trick for numeric stability (norm won't becomes 0)
     x = x + torch.sign(x) * 1e-4
     norm = torch.norm(x, p=2, dim=1, keepdim=True)
+    norm = norm + (1 - torch.sign(torch.abs(norm))) * 1e-4
+    assert not torch.isnan(x).any()
+    assert not torch.isnan(norm).any()
     norm = norm.detach()
-    return x / norm
+    emb = x / norm
+    assert not torch.isnan(emb).any()
+    return emb
 
 
 class NormalsDeepEmbedding(nn.Module):
@@ -278,7 +284,7 @@ class ExpSegNormals(nn.Module):
     def forward(self, x):
         b, _, h, w = x.size()
         emb = self.normals_emb(x)
-
+        assert(not torch.isnan(emb).any())
         with torch.no_grad():
             dirs = torch.cat([self.dirs for i in range(b)], dim=0)
         x = torch.cat((dirs, x), dim=1)
@@ -289,6 +295,7 @@ class ExpSegNormals(nn.Module):
         # normal inference
         labels = torch.argmax(classes.detach(), dim=1, keepdim=True)
         signs = labelToSign(labels)
+        assert(not torch.isnan(signs).any())
         normals = emb * signs
         return {
             "normals": torch.reshape(normals, (b, 3, h, w)),
@@ -377,6 +384,7 @@ class RectNet(nn.Module):
         self.calc_normals = normal_est
         self.calc_planes = calc_planes
         self.calc_segmentation = segmentation_est
+
         if self.calc_planes:
             self.calc_normals = True
             self.calc_segmentation = True
@@ -400,6 +408,8 @@ class RectNet(nn.Module):
 
         if self.calc_planes:
             self.planar_to_depth = PlanarToDepth(height=256, width=512)
+            # self.mean_shift = Bin_Mean_Shift()
+            # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
         self.apply(xavier_init)
 
@@ -487,7 +497,7 @@ class RectNet(nn.Module):
         outputs = {}
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
-        if self.calc_normals or self.calc_plane_params:
+        if self.calc_normals:
             if self.normals_type == 'deep':
                 normals_input = encoder2_2_out
             else:
@@ -504,8 +514,13 @@ class RectNet(nn.Module):
                 pred_normals_embed = res
 
             outputs["normals_emb"] = pred_normals_embed
+            # planes = inputs[DataType.Planes]
+            # b, p, h, w = planes.size()
+            # pred_normals_r = torch.reshape(pred_normals, (b, 1, 3, -1))
+            # planes_r = torch.reshape(planes, (b, p, 1, -1))
+            # avg_normals = torch.sum(planeAwarePooling(pred_normals_r, planes_r, keepdim=True), dim=1)
+            # outputs["normals"] = torch.reshape(avg_normals,(b,3,h,w))
             outputs["normals"] = pred_normals
-
             # print(pred_normals.size())
 
         if self.calc_segmentation:
@@ -515,8 +530,8 @@ class RectNet(nn.Module):
             pred_seg = self.seg_cov3(seg_cat)
             outputs["segmentation"] = pred_seg
 
-        if (self.calc_normals and self.calc_planes and
-                DataType.Planes in inputs and self.calc_segmentation):
+        if (self.calc_normals and self.calc_planes
+                and DataType.Planes in inputs and self.calc_segmentation):
             planes = inputs[DataType.Planes]
             outputs["depth1x"] = self.planar_to_depth(opt_depth, planes,
                                                       pred_seg, pred_normals)
@@ -1200,11 +1215,13 @@ def planeAwarePooling(params, planes, keepdim=False):
         # b x p
         plane_weights = torch.sum(planes, dim=3) + 1
         planes3_channel = torch.cat((planes, planes, planes), dim=2)
+    assert(not torch.isnan(params).any())
     # print(params.size(), planes.size(), planes3_channel.size())
     avg_param = torch.sum(params * planes3_channel, dim=3)
     # print(avg_param.size(), plane_weights.size())
     # b x p x 3
     avg_param /= plane_weights
+    assert(not torch.isnan(avg_param).any())
     avg_param = torch.reshape(avg_param, (*avg_param.size(), 1))
     if keepdim:
         return avg_param * planes3_channel
@@ -1220,21 +1237,71 @@ class PlanarToDepth(nn.Module):
     def forward(self, depth, planes, segmentation, normals):
         points = self.to3d(depth)
         rays = self.to3d(torch.ones_like(depth))
-        b, p, _, h, w = planes.size()
-        planes = torch.reshape(planes, (b, p, 1, -1))
+        eps = 0.000001
+        # planes = planes[:, 0:3, :, :]
+        b, p, h, w = planes.size()
+        planes_r = torch.reshape(planes, (b, p, 1, -1))
         points = torch.reshape(points, (b, 1, 3, -1))
-        depths = torch.reshape(depth, (b, 1, 1, -1))
+        # depths = torch.reshape(depth, (b, 1, 1, -1))
         rays = torch.reshape(rays, (b, 1, 3, -1))
+        normals = torch.reshape(normals, (b, 1, 3, -1))
         # BxPx3xN
-        avg_normals = planeAwarePooling(normals, planes, keepdim=True)
-        centroids = planeAwarePooling(depths, planes, keepdim=True)
+        avg_normals = planeAwarePooling(normals, planes_r, keepdim=True)
+        centroids = planeAwarePooling(points, planes_r, keepdim=True)
 
-        norm = torch.sum(rays * avg_normals, dim=2) + 0.000001
-        planar_depths = (torch.sum(centroids * avg_normals, dim=2) / norm)
+        # calculate distance to plane from camera center
+        planes_bin = torch.sign(planes_r)
+        norm = torch.sum(rays * (avg_normals.detach()), dim=2, keepdim=True)
+        # print(norm.size(), planes_r.size(), rays.size(), torch.min(norm))
+        norm = norm + (1 - torch.sign(planes_r.detach())) * eps
+        assert((norm != 0).any())
+        # assert((torch.abs(norm) > eps).any())
+
+        assert(not torch.isnan(planes_bin).any())
+        assert(not torch.isnan(centroids).any())
+        assert(not torch.isnan(avg_normals).any())
+
+        planar_depths = torch.sum(planes_bin * centroids * avg_normals, dim=2, keepdim=True)
+        # print(torch.min(planar_depths))
+        assert(not torch.isnan(planar_depths).any())
+        planar_depths = planar_depths / norm
+        # planar_depths = torch.abs(planar_depths) * planes_bin
+        assert(not torch.isnan(planar_depths).any())
+        planar_depths = planar_depths * planes_bin
+        planar_depths = torch.reshape(planar_depths, (b, p, -1))
+        assert(not torch.isnan(planar_depths).any())
+        # print("negative:", torch.sum(planar_depths > eps), torch.sum(planar_depths < -eps))
+        # print(planar_depths.size(), torch.min(planar_depths), torch.max(planar_depths))
+        # assert(torch.min(planar_depths) >= 0)
         # B x P x N
+        # plane_pixel_probs = torch.sum(planes_r.detach(), dim=(1, 2))
+        # plane_pixel_probs = plane_pixel_probs + torch.sign(plane_pixel_probs) * 1e-4
         planar_depths = torch.sum(planar_depths, dim=1)
+        # planar_depths = planar_depths / plane_pixel_probs
         planar_depths = torch.reshape(planar_depths, (b, 1, h, w))
-        return segmentation * planar_depths + (1 - segmentation) * depth
+        valid_pixels = torch.ones_like(planar_depths)
+        valid_pixels[planar_depths > 8.0] = 0
+        valid_pixels[planar_depths < 0.0] = 0
+        # print(torch.isnan(planar_depths).sum())
+        # valid_pixels[torch.isnan(planar_depths)] = 0
+        # print(torcPh.isnan(planar_depths).sum())
+        # planar_depths = torch.clamp(planar_depths, 0.0, 8.0)
+        # seg = torch.sigmoid(segmentation)
+        # seg = torch.sign(torch.sum(planes.detach(), dim=1, keepdim=True))
+        # seg = torch.sign(planar_depths.detach())
+        seg_planar = torch.sigmoid(segmentation)
+        valid_pixels[seg_planar < 0.5] = 0
+
+        assert(not torch.isnan(planar_depths).any())
+        planar_depths = planar_depths * valid_pixels
+        seg = torch.sign(planar_depths.clone().detach())
+        depth_res = seg * planar_depths + (1 - seg) * depth
+        assert(not torch.isnan(valid_pixels).any())
+        assert(not torch.isnan(seg).any())
+        assert(not torch.isnan(depth).any())
+        assert(not torch.isnan(depth_res).any())
+        # print(depth_res.size(), seg.size(), planar_depths.size(), depth.size())
+        return depth_res
 
 
 def toPlaneParams(normals, depth):

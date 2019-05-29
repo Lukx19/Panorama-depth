@@ -4,7 +4,7 @@ import visdom
 from trainers import MonoTrainer
 import dataset
 from util import set_caffe_param_mult, load_encoder_weights
-from run_utils import setupPipeline, parseArgs, setupGPUDevices
+from run_utils import setupPipeline, parseArgs, setupGPUDevices, parseLossScales
 
 import os.path as osp
 import os
@@ -22,11 +22,12 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 500
+visualization_freq = 100
 validation_sample_freq = -1
 
+loss_scales = parseLossScales(args.loss_scales)
 model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(
-    args.network_type, args.loss_type, args.add_points, args.empty_points)
+    args.network_type, args.loss_type, args.add_points, args.empty_points, loss_scales)
 
 network, criterion, device = setupGPUDevices(
     gpus_list=args.gpu_ids, model=model, criterion=criterion)

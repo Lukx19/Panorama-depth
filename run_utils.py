@@ -11,7 +11,7 @@ torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 
 
-def setupPipeline(network_type, loss_type, add_points, empty_points):
+def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales={}):
     in_channels = 3
     parser = parse_data
     if add_points:
@@ -39,7 +39,11 @@ def setupPipeline(network_type, loss_type, add_points, empty_points):
                         segmentation_est=True, normals_est_type="sphere")
     elif network_type == 'RectNetPlanes':
         model = RectNet(in_channels, cspn=False, normal_est=True,
-                        segmentation_est=True, plane_param_es=True,
+                        segmentation_est=True, calc_planes=True,
+                        normals_est_type="standart")
+    elif network_type == 'RectNetPlanesSphere':
+        model = RectNet(in_channels, cspn=False, normal_est=True,
+                        segmentation_est=True, calc_planes=True,
                         normals_est_type="sphere")
     elif network_type == 'RectNetPad':
         model = RectNet(in_channels, cspn=False, reflection_pad=True)
@@ -55,7 +59,6 @@ def setupPipeline(network_type, loss_type, add_points, empty_points):
         assert False, 'Unsupported network type'
 
     criterion = None
-    mul_factors = {}
     if loss_type is not None:
         if loss_type == "MultiScale":
             criterion = MultiScaleL2Loss(alpha_list, beta_list)
@@ -63,28 +66,41 @@ def setupPipeline(network_type, loss_type, add_points, empty_points):
             criterion = GradLoss()
         elif loss_type == "Revis_all":
             criterion = GradLoss(all_levels=True)
+        elif loss_type == "Revis_adaptive":
+            criterion = GradLoss(all_levels=True, adaptive=True)
         elif loss_type == "Revis_Normal_Seg":
             criterion = NormSegLoss()
         elif loss_type == "PlaneNormSegLoss":
             normal_loss = CosineNormalsLoss()
             criterion = PlaneNormSegLoss(normal_loss=normal_loss)
-            mul_factors["Plane_dist_plane_loss"] = 10.0
-            mul_factors["revis_l1_dist_1"] = 10.0
-            mul_factors["revis_l1_dist_2"] = 10.0
-            mul_factors["Pixel_normal_similarity_loss"] = 0.0
-            mul_factors["Plane_normal_similarity_loss"] = 0.0
-            mul_factors["Segmentation_Loss"] = 0.0
+            loss_scales["Plane_dist_plane_loss"] = 10.0
+            loss_scales["revis_l1_dist_1"] = 10.0
+            loss_scales["revis_l1_dist_2"] = 10.0
+            # loss_scales["Pixel_normal_similarity_loss"] = 0.0
+            # loss_scales["Plane_normal_similarity_loss"] = 0.0
+            # loss_scales["Segmentation_Loss"] = 0.0
         elif loss_type == "PlaneParamsLoss":
             criterion = PlaneParamsLoss()
         elif loss_type == "PlaneNormClassSegLoss":
             normal_loss = SphericalNormalsLoss()
             criterion = PlaneNormSegLoss(normal_loss=normal_loss)
-            mul_factors["Plane_dist_plane_loss"] = 10.0
-            mul_factors["revis_l1_dist_1"] = 10.0
-            mul_factors["revis_l1_dist_2"] = 10.0
+            loss_scales["Plane_dist_plane_loss"] = 10.0
+            loss_scales["revis_l1_dist_1"] = 10.0
+            loss_scales["revis_l1_dist_2"] = 10.0
         else:
             assert False, 'Unsupported loss type'
-    return model, (criterion, genTotalLoss(mul_factors)), parser, rgb_transformer, depth_transformer
+    return model, (criterion, genTotalLoss(loss_scales)), parser, rgb_transformer, depth_transformer
+
+
+def parseLossScales(loss_str: str):
+    loss_scales = {}
+    if loss_str == "":
+        return loss_scales
+    losses = loss_str.split(",")
+    for loss in losses:
+        loss_name, loss_value = tuple(loss.split(":"))
+        loss_scales[loss_name] = float(loss_value)
+    return loss_scales
 
 
 def parseArgs(test=False, predict=False):
@@ -159,6 +175,9 @@ def parseArgs(test=False, predict=False):
 
         parser.add_argument('--loss_type', default="Revis", type=str,
                             help='MultiScale or Revis or PlaneNormSegLoss or PlaneParamsLoss')
+        parser.add_argument('--loss_scales', default="", type=str,
+                            help=("""Define individual loss function scaling in a form
+                                   loss_name:10.0, loss_name2:0.0"""))
 
         parser.add_argument('--batch_size', default=8,
                             type=int, help='Batch size')
@@ -184,6 +203,7 @@ def setupGPUDevices(gpus_list, model, criterion=None):
     print("cudnn benchmark=", torch.backends.cudnn.benchmark)
 
     device = torch.device('cuda', device_ids[0])
+    torch.cuda.set_device(device)
     if len(device_ids) > 1:
         network = nn.DataParallel(
             model.float(),

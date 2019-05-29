@@ -140,6 +140,9 @@ def parse_data(raw_data):
         data.add(mask_4x, DataType.Mask, scale=4)
 
     inputs = {DataType.Image: rgb}
+    planes = data.get(DataType.Planes, scale=1)
+    if len(planes):
+        inputs[DataType.Planes] = planes[0]
 
     return inputs, data
 
@@ -164,7 +167,6 @@ def genSparsePontsParser(empty_sparse_pts=False):
                 4: torch.zeros_like(sparse_depth_4x)
             }
         inputs[DataType.SparseDepth] = sparse_scales
-        inputs[DataType.Planes] = data.get(DataType.Planes, scale=1)
 
         data.add(sparse_scales[1], DataType.SparseDepth, scale=1)
         data.add(sparse_scales[2], DataType.SparseDepth, scale=2)
@@ -230,6 +232,7 @@ def genTotalLoss(factors={}):
             for val in loss.items():
                 total_loss += val
         elif isinstance(loss, torch.Tensor):
+            assert(not torch.isnan(loss).any())
             total_loss = loss
         else:
             raise ValueError("Unsupoted loss type: ", type(loss))
@@ -471,6 +474,7 @@ class MonoTrainer(object):
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
         report = self.print_validation_report()
+        self.network = self.network.train()
         return report
 
     def train(self, checkpoint_path=None, weights_only=False):
@@ -492,7 +496,7 @@ class MonoTrainer(object):
             # Increment the LR scheduler
             if self.scheduler is not None:
                 self.scheduler.step()
-
+            self.network = self.network.train()
             # Run an epoch of training
             self.train_one_epoch()
 
@@ -703,6 +707,7 @@ class MonoTrainer(object):
             max_val = torch.max(hist[0]).item()
             if max_val > 8:
                 max_val = 8.0
+            # print(key)
             graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
             if save_to_disk:
                 py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
