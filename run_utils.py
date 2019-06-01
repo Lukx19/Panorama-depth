@@ -38,10 +38,12 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
         model = RectNet(in_channels, cspn=False, normal_est=True,
                         segmentation_est=True, normals_est_type="sphere")
     elif network_type == 'RectNetPlanes':
+        torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, cspn=False, normal_est=True,
                         segmentation_est=True, calc_planes=True,
                         normals_est_type="standart")
     elif network_type == 'RectNetPlanesSphere':
+        torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, cspn=False, normal_est=True,
                         segmentation_est=True, calc_planes=True,
                         normals_est_type="sphere")
@@ -66,6 +68,8 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
             criterion = GradLoss()
         elif loss_type == "Revis_all":
             criterion = GradLoss(all_levels=True)
+        elif loss_type == "Revis_normals":
+            criterion = GradLoss(all_levels=True, depth_normals=True)
         elif loss_type == "Revis_adaptive":
             criterion = GradLoss(all_levels=True, adaptive=True)
         elif loss_type == "Revis_Normal_Seg":
@@ -73,20 +77,23 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
         elif loss_type == "PlaneNormSegLoss":
             normal_loss = CosineNormalsLoss()
             criterion = PlaneNormSegLoss(normal_loss=normal_loss)
-            loss_scales["Plane_dist_plane_loss"] = 10.0
-            loss_scales["revis_l1_dist_1"] = 10.0
-            loss_scales["revis_l1_dist_2"] = 10.0
+            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
+            # loss_scales["Plane_dist_plane_loss"] = 10.0
+            # loss_scales["revis_l1_dist_1"] = 10.0
+            # loss_scales["revis_l1_dist_2"] = 10.0
             # loss_scales["Pixel_normal_similarity_loss"] = 0.0
             # loss_scales["Plane_normal_similarity_loss"] = 0.0
             # loss_scales["Segmentation_Loss"] = 0.0
         elif loss_type == "PlaneParamsLoss":
+            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
             criterion = PlaneParamsLoss()
         elif loss_type == "PlaneNormClassSegLoss":
+            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
             normal_loss = SphericalNormalsLoss()
             criterion = PlaneNormSegLoss(normal_loss=normal_loss)
-            loss_scales["Plane_dist_plane_loss"] = 10.0
-            loss_scales["revis_l1_dist_1"] = 10.0
-            loss_scales["revis_l1_dist_2"] = 10.0
+            # loss_scales["Plane_dist_plane_loss"] = 10.0
+            # loss_scales["revis_l1_dist_1"] = 10.0
+            # loss_scales["revis_l1_dist_2"] = 10.0
         else:
             assert False, 'Unsupported loss type'
     return model, (criterion, genTotalLoss(loss_scales)), parser, rgb_transformer, depth_transformer
@@ -99,7 +106,7 @@ def parseLossScales(loss_str: str):
     losses = loss_str.split(",")
     for loss in losses:
         loss_name, loss_value = tuple(loss.split(":"))
-        loss_scales[loss_name] = float(loss_value)
+        loss_scales[loss_name.strip()] = float(loss_value.strip())
     return loss_scales
 
 

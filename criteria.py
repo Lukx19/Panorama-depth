@@ -3,7 +3,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from annotated_data import DataType
-from network import Depth2Points, planeAwarePooling, toPlaneParams, signToLabel
+from network import Depth2Points, planeAwarePooling, toPlaneParams, signToLabel, DepthToNormals
 from util import mergeInDict
 
 
@@ -282,12 +282,13 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     output_normal = torch.cat(
         (-output_grad_dx, -output_grad_dy, ones), 1)
 
-    validMean = createValidMean(mask, adaptive=adaptive)
+    validMean = createValidMean(mask, adaptive=False)
     #  L1 loss on depth distances
     loss_depth = torch.log(l1Loss(pred, gt) + 1)
     histograms["revis_l1_dist"] = loss_depth.detach()
     loss_depth = validMean(loss_depth)
 
+    validMean = createValidMean(mask, adaptive=adaptive)
     loss_dx = torch.log(l1Loss(output_grad_dx, depth_grad_dx) + 1)
     loss_dy = torch.log(l1Loss(output_grad_dy, depth_grad_dy) + 1)
     histograms["revis_dxdy"] = (loss_dx + loss_dy).detach()
@@ -314,13 +315,17 @@ def sumLosses(losses):
 
 class GradLoss(nn.Module):
 
-    def __init__(self, all_levels=False,adaptive=False):
+    def __init__(self, height=256, width=512, all_levels=False,
+                 adaptive=False, depth_normals=False):
 
         super(GradLoss, self).__init__()
         self.sobel = Sobel()
         self.l2_loss = L2Loss()
         self.all_levels = all_levels
         self.adaptive = adaptive
+        self.depth_normals = depth_normals
+        if self.depth_normals:
+            self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
     def forward(self, predictions, data):
         losses = {}
@@ -331,13 +336,19 @@ class GradLoss(nn.Module):
             if i == 0 or self.all_levels:
                 revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel, self.adaptive)
                 for key, loss in revis_losses.items():
-                    losses[key + "_" + str(scale)] = loss
+                    losses[key + "_" + str(scale) + "_" + str(i)] = loss
 
                 for key, hist in revis_hist.items():
-                    histograms[key + "_" + str(scale)] = hist
+                    histograms[key + "_" + str(scale) + "_" + str(i)] = hist
             else:
                 l2_loss = self.l2_loss(pred, gt, mask)
-                losses["revis_l2" + "_" + str(scale)] = l2_loss
+                losses["revis_l2" + "_" + str(scale) + "_" + str(i)] = l2_loss
+
+        if self.depth_normals:
+            l, h = self.depth_cosine_loss(predictions, data)
+            losses = mergeInDict(losses, l)
+            histograms = mergeInDict(histograms, h)
+
         return losses, histograms
 
 
@@ -440,12 +451,43 @@ class CosineNormalsLoss(nn.Module):
         return losses, histograms
 
 
+class CosineDepthNormalsLoss(nn.Module):
+
+    def __init__(self, height, width):
+        super(CosineDepthNormalsLoss, self).__init__()
+        self.depth_normals = DepthToNormals(height=height, width=width,
+                                            kernel_size=3, padding=2, dilation=2)
+
+    def forward(self, predictions, data):
+        histograms = {}
+        losses = {}
+        mask = data.get(DataType.Mask, scale=1)[0]
+        gt_depth = data.get(DataType.Depth)[0] * mask
+
+        pred_normals = predictions.get(DataType.DepthNormals)[0] * mask
+
+        # pred_depth = predictions.get(DataType.Depth)[0] * mask
+        # pred_normals = self.depth_normals(pred_depth)
+
+        with torch.no_grad():
+            gt_normals = self.depth_normals(gt_depth)
+
+        validMean = createValidMean(mask)
+        similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=None)
+        histograms["Pixel_depth_normal_similarity_loss"] = similarity.detach()
+        losses["Pixel_depth_normal_similarity_loss"] = validMean(similarity)
+
+        return losses, histograms
+
+
 class PlaneNormSegLoss(nn.Module):
     def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
         super(PlaneNormSegLoss, self).__init__()
         self.to3d = Depth2Points(height, width)
-        self.sobel = Sobel()
+        # self.sobel = Sobel()
         self.normal_loss = normal_loss
+        self.grad_loss = GradLoss(all_levels=True, adaptive=False)
+        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -455,21 +497,25 @@ class PlaneNormSegLoss(nn.Module):
         return avg_plane_normal / norm
 
     def forward(self, predictions, data):
-        losses = {}
-        histograms = {}
+        # losses = {}
+        # histograms = {}
         planes = data.get(DataType.Planes, scale=1)[0]
         # 1= pixels where are some planes 0 = otherwise
         plane_mask = torch.sign(torch.sum(planes, dim=1))
+        losses, histograms = self.grad_loss(predictions, data)
 
-        for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
-            gt = data.get(DataType.Depth, scale=scale)[0]
-            mask = data.get(DataType.Mask, scale=scale)[0]
-            revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel)
-            for key, loss in revis_losses.items():
-                losses[key + "_" + str(scale)] = loss
+        l, h = self.depth_cosine_loss(predictions, data)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
+        # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
+        #     gt = data.get(DataType.Depth, scale=scale)[0]
+        #     mask = data.get(DataType.Mask, scale=scale)[0]
+        #     revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel)
+        #     for key, loss in revis_losses.items():
+        #         losses[key + "_" + str(scale)] = loss
 
-            for key, hist in revis_hist.items():
-                histograms[key + "_" + str(scale)] = hist
+        #     for key, hist in revis_hist.items():
+        #         histograms[key + "_" + str(scale)] = hist
 
         mask = data.get(DataType.Mask, scale=1)[0]
 

@@ -287,6 +287,7 @@ class ExpSegNormals(nn.Module):
         assert(not torch.isnan(emb).any())
         with torch.no_grad():
             dirs = torch.cat([self.dirs for i in range(b)], dim=0)
+
         x = torch.cat((dirs, x), dim=1)
         out1 = self.cov1(x)
         out2 = self.cov2(x)
@@ -310,7 +311,8 @@ class RectNet(nn.Module):
                  normal_est=False, segmentation_est=False,
                  calc_planes=False, normals_est_type='standart'):
         super(RectNet, self).__init__()
-
+        self.height = 256
+        self.width = 512
         # Network definition
         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(
             1, 4), reflection_pad=reflection_pad)
@@ -380,6 +382,8 @@ class RectNet(nn.Module):
             self.guidance = ConvELUBlock(
                 64, 8, 3, padding=1, reflection_pad=reflection_pad)
             self.cspn = CSPN()
+        self.depth_normals = DepthToNormals(height=self.height, width=self.width,
+                                            kernel_size=3, padding=2, dilation=2)
 
         self.calc_normals = normal_est
         self.calc_planes = calc_planes
@@ -407,7 +411,8 @@ class RectNet(nn.Module):
             self.seg_cov3 = nn.Conv2d(32, 1, 1)
 
         if self.calc_planes:
-            self.planar_to_depth = PlanarToDepth(height=256, width=512)
+            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+            self.prediction_planar = nn.Conv2d(65, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
             # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
@@ -497,6 +502,7 @@ class RectNet(nn.Module):
         outputs = {}
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
+        outputs["depth_normals"] = self.depth_normals(opt_depth)
         if self.calc_normals:
             if self.normals_type == 'deep':
                 normals_input = encoder2_2_out
@@ -533,8 +539,13 @@ class RectNet(nn.Module):
         if (self.calc_normals and self.calc_planes
                 and DataType.Planes in inputs and self.calc_segmentation):
             planes = inputs[DataType.Planes]
-            outputs["depth1x"] = self.planar_to_depth(opt_depth, planes,
-                                                      pred_seg, pred_normals)
+            planar_depth = self.planar_to_depth(opt_depth, planes,
+                                                pred_seg, pred_normals)
+            # outputs["depth_planar"] = planar_depth
+            feat_planar = torch.cat((planar_depth, decoder1_2_out), dim=1)
+            refined_depth = self.prediction_planar(feat_planar)
+            outputs["depth_ref"] = refined_depth
+            # outputs["depth1x"] = refined_depth
 
         return outputs
 
@@ -556,8 +567,13 @@ class RectNet(nn.Module):
             data.add(outputs["segmentation"], DataType.PlanarSegmentation)
         if "depth_planar" in outputs:
             data.add(outputs["depth_planar"], DataType.Depth)
+        if "depth_ref" in outputs:
+            data.add(outputs["depth_ref"], DataType.Depth)
+
         data.add(outputs["depth1x"], DataType.Depth)
         data.add(outputs["depth2x"], DataType.Depth, scale=2)
+        if "depth_normals" in outputs:
+            data.add(outputs["depth_normals"], DataType.DepthNormals)
         return data
 
 
@@ -1245,6 +1261,7 @@ class PlanarToDepth(nn.Module):
         # depths = torch.reshape(depth, (b, 1, 1, -1))
         rays = torch.reshape(rays, (b, 1, 3, -1))
         normals = torch.reshape(normals, (b, 1, 3, -1))
+        # normals += torch.isnan(normals.detach()).float()
         # BxPx3xN
         avg_normals = planeAwarePooling(normals, planes_r, keepdim=True)
         centroids = planeAwarePooling(points, planes_r, keepdim=True)
@@ -1280,8 +1297,8 @@ class PlanarToDepth(nn.Module):
         # planar_depths = planar_depths / plane_pixel_probs
         planar_depths = torch.reshape(planar_depths, (b, 1, h, w))
         valid_pixels = torch.ones_like(planar_depths)
-        valid_pixels[planar_depths > 8.0] = 0
-        valid_pixels[planar_depths < 0.0] = 0
+        valid_pixels[planar_depths > 8.0] = 0.0
+        valid_pixels[planar_depths < 0.0] = 0.0
         # print(torch.isnan(planar_depths).sum())
         # valid_pixels[torch.isnan(planar_depths)] = 0
         # print(torcPh.isnan(planar_depths).sum())
@@ -1289,19 +1306,20 @@ class PlanarToDepth(nn.Module):
         # seg = torch.sigmoid(segmentation)
         # seg = torch.sign(torch.sum(planes.detach(), dim=1, keepdim=True))
         # seg = torch.sign(planar_depths.detach())
-        seg_planar = torch.sigmoid(segmentation)
-        valid_pixels[seg_planar < 0.5] = 0
+        # seg_planar = torch.sigmoid(segmentation)
+        # valid_pixels[seg_planar < 0.5] = 0
 
         assert(not torch.isnan(planar_depths).any())
         planar_depths = planar_depths * valid_pixels
-        seg = torch.sign(planar_depths.clone().detach())
-        depth_res = seg * planar_depths + (1 - seg) * depth
+        # planar_depths += torch.isnan(planar_depths.detach()).float()
+        # seg = torch.sign(planar_depths.clone().detach())
+        # depth_res = seg * planar_depths + (1 - seg) * depth
         assert(not torch.isnan(valid_pixels).any())
-        assert(not torch.isnan(seg).any())
-        assert(not torch.isnan(depth).any())
-        assert(not torch.isnan(depth_res).any())
+        # assert(not torch.isnan(seg).any())
+        # assert(not torch.isnan(depth).any())
+        # assert(not torch.isnan(depth_res).any())
         # print(depth_res.size(), seg.size(), planar_depths.size(), depth.size())
-        return depth_res
+        return planar_depths
 
 
 def toPlaneParams(normals, depth):
@@ -1315,3 +1333,84 @@ def toPlaneParams(normals, depth):
     params = normals / depth_padded
     params = params * (1 - zero_mask)
     return params
+
+
+class DepthToNormals(nn.Module):
+    def __init__(self, height, width, kernel_size, dilation=1, padding=0, estimate_type="lin_sq"):
+        super(DepthToNormals, self).__init__()
+        self.unfold = torch.nn.Unfold(kernel_size=kernel_size, dilation=dilation,
+                                      padding=padding, stride=1)
+        # self.fold = torch.nn.Fold(output_size=(height, width), kerne_size=kernel_size,
+        #                           dilation=dilation, padding=padding, stride=1)
+        self.height = height
+        self.width = width
+        self.to3d = Depth2Points(height, width)
+        self.estimate_type = estimate_type
+        if type(kernel_size) is int:
+            self.kernel_size = (kernel_size, kernel_size)
+        else:
+            self.kernel_size = kernel_size
+        h, w = self.kernel_size
+        self.ones = nn.Parameter(torch.ones((h * w, 1), requires_grad=False))
+        self.eye = nn.Parameter(torch.eye(3), requires_grad=False)
+
+    def batchedInv(self, tensor):
+        orig_shape = tensor.size()
+        tensor = tensor.reshape(-1, orig_shape[-2], orig_shape[-1])
+        if tensor.shape[0] >= 256 * 256 - 1:
+            temp = []
+            for t in torch.split(tensor, 256 * 256 - 1):
+                temp.append(torch.inverse(t))
+            inverted = torch.cat(temp)
+        else:
+            inverted = torch.inverse(tensor)
+        inverted = torch.reshape(inverted, orig_shape)
+        return inverted
+
+    def solve(self, points):
+        """Uses An=b solution to estimate best fitting plane to 3d points for normal estimation
+
+        Parameters
+        ----------
+        points : Tensor B x N x L of 3D points
+            B batch size, N = 3xKhxKw whre Kh and Kw are kernel height and kernel width
+            L are all kernel positions
+        Returns
+        -------
+        Tensor Bx3xHxW
+            Calculated normal for each pixel
+        """
+
+        b, n, k = points.size()
+        Kh, Kw = self.kernel_size
+        points = torch.transpose(points, dim0=1, dim1=2)
+        # BxLxN
+        A_t = torch.reshape(points, (b, k, 3, Kh * Kw))
+        A = torch.transpose(A_t, dim0=2, dim1=3)
+        A_t_A = torch.matmul(A_t, A)
+        A_t_A = A_t_A + 1e-05 * self.eye
+        A_t_o = torch.matmul(A_t, self.ones)
+        A_t_A_inv = self.batchedInv(A_t_A)
+
+        normals = torch.matmul(A_t_A_inv, A_t_o)
+        # print(normals.size())
+        norm = torch.norm(normals, p=2, dim=2, keepdim=True)
+        norm = norm + (1 - torch.sign(torch.abs(norm))) * 1e-4
+        # BxLx3x1
+        # print(normals.size())
+        normals = -normals / norm.detach()
+        assert not torch.isnan(normals).any(), "Normal solving produces NaNs"
+        normals = torch.transpose(normals, dim0=1, dim1=2)
+        normals = torch.reshape(normals, (b, 3, self.height, self.width))
+        return normals
+        # solve An = b
+
+    def forward(self, depth):
+        points = self.to3d(depth)
+        unfolded = self.unfold(points)
+        if self.estimate_type == "lin_sq":
+            normals = self.solve(unfolded)
+        else:
+            raise ValueError("Unknown normal estimator type " + self.estimate_type)
+
+        return normals

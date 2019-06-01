@@ -13,7 +13,7 @@ from metrics import (abs_rel_error, delta_inlier_ratio,
 
 from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
                   stackVerticaly, heatmapGrid)
-from network import toPlaneParams
+from network import toPlaneParams, DepthToNormals
 import torchvision.transforms as Tt
 from torchvision.utils import make_grid
 
@@ -689,6 +689,7 @@ class MonoTrainer(object):
         '''
         Updates the output samples visualization
         '''
+
         data_folder = osp.join(self.checkpoint_dir, "visdom")
         os.makedirs(data_folder, exist_ok=True)
         self.vis[0].save([self.vis[1]])
@@ -773,6 +774,24 @@ class MonoTrainer(object):
                 py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
 
             self.vis[0].plotlyplot(normals_fig, win="normals", env=self.vis[1])
+
+        pred_depth_normals = output.get(DataType.DepthNormals, scale=1)
+        gt_depth = data.get(DataType.Depth, scale=1)
+
+        if len(pred_depth_normals) > 0 and len(gt_depth) > 0:
+            gt_depth_normals = DepthToNormals(kernel_size=3, dilation=2, padding=2,
+                                              height=256, width=512)(gt_depth[0].cpu())
+            pred_depth_normals = pred_depth_normals[0][0].cpu().detach()
+            pred_depth_normals = stackVerticaly(pred_depth_normals).squeeze().flip(0).numpy()
+            gt_depth_normals = gt_depth_normals[0].cpu().detach()
+            gt_depth_normals = stackVerticaly(gt_depth_normals).squeeze().flip(0).numpy()
+
+            normals_fig = heatmapGrid([gt_depth_normals, pred_depth_normals],
+                                      ["Gt depth normals", "Pred depth normals"])
+            if save_to_disk:
+                py.io.write_image(normals_fig, osp.join(data_folder, 'depth_normals.png'))
+
+            self.vis[0].plotlyplot(normals_fig, win="depth_normals", env=self.vis[1])
 
         pred_plane_param = output.get(DataType.PlaneParams, scale=1)
         gt_plane_param = data.get(DataType.PlaneParams, scale=1)
