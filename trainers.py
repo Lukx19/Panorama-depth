@@ -12,7 +12,7 @@ from metrics import (abs_rel_error, delta_inlier_ratio,
                      lin_rms_sq_error, log_rms_sq_error, sq_rel_error)
 
 from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
-                  stackVerticaly, heatmapGrid)
+                  stackVerticaly, heatmapGrid, pytorchDetachedProcess)
 from network import toPlaneParams, DepthToNormals
 import torchvision.transforms as Tt
 from torchvision.utils import make_grid
@@ -360,12 +360,12 @@ class MonoTrainer(object):
         self.optimizer.step()
 
     def updateLossMeters(self, raw_loss, total_loss):
-        self.loss_meters["total"].update(total_loss)
+        self.loss_meters["total"].update(total_loss.item())
         if isinstance(raw_loss, dict):
             for key, val in raw_loss.items():
                 if key not in self.loss_meters:
                     self.loss_meters[key] = AverageMeter()
-                self.loss_meters[key].update(val)
+                self.loss_meters[key].update(val.item())
 
     def train_one_epoch(self):
 
@@ -422,8 +422,9 @@ class MonoTrainer(object):
                     dict_loss[key] = tensor.item()
                 print(json.dumps(dict_loss, indent=4, sort_keys=True))
                 # Visualize the loss
-                self.visualize_loss(batch_num, self.loss_meters)
-                self.visualize_samples(data, output, histograms)
+                total_batches = self.epoch * len(self.train_dataloader) + batch_num
+                visualize_loss(self.vis, batch_num, total_batches, self.loss_meters)
+                visualize_samples(self.vis, self.checkpoint_dir, data, output, histograms)
 
                 # Print the most recent batch report
                 self.print_batch_report(batch_num)
@@ -657,180 +658,6 @@ class MonoTrainer(object):
                 ylabel='Percent',
                 legend=['d1', 'd2', 'd3']))
 
-    def visualize_loss(self, batch_num, loss_meters):
-        '''
-        Updates the loss visualization
-        '''
-        total_num_batches = self.epoch * len(self.train_dataloader) + batch_num
-        for key, loss_meter in loss_meters.items():
-            if not self.vis[0].win_exists(key, env=self.vis[1]):
-                self.vis[0].line(
-                    env=self.vis[1],
-                    X=torch.zeros(1, 1).long(),
-                    Y=torch.zeros(1, 1).float(),
-                    win=key,
-                    opts=dict(
-                        title=key + ' Plot',
-                        markers=False,
-                        xlabel='Iteration',
-                        ylabel='Loss',
-                        legend=[key]))
-            else:
-                self.vis[0].line(
-                    env=self.vis[1],
-                    X=torch.tensor([total_num_batches]),
-                    Y=torch.tensor([loss_meter.avg]),
-                    win=key,
-                    update='append',
-                    opts=dict(
-                        legend=[key]))
-
-    def visualize_samples(self, data, output, loss_hist, save_to_disk=True):
-        '''
-        Updates the output samples visualization
-        '''
-
-        data_folder = osp.join(self.checkpoint_dir, "visdom")
-        os.makedirs(data_folder, exist_ok=True)
-        self.vis[0].save([self.vis[1]])
-        rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
-        depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
-        pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
-        pred_depth *= depth_mask
-        pred_depth = pred_depth.squeeze().flip(0).numpy()
-
-        gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu().detach()
-        gt_depth *= depth_mask
-        gt_depth = gt_depth.squeeze().flip(0).numpy()
-
-        for key, hist in loss_hist.items():
-            # print(key)
-            max_val = torch.max(hist[0]).item()
-            if max_val > 8:
-                max_val = 8.0
-            # print(key)
-            graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
-            if save_to_disk:
-                py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
-            self.vis[0].plotlyplot(graph, win=key, env=self.vis[1])
-
-        self.vis[0].image(
-            visualize_rgb(rgb),
-            env=self.vis[1],
-            win='rgb',
-            opts=dict(
-                title='Input RGB Image',
-                caption='Input RGB Image'))
-
-        self.vis[0].image(
-            visualize_mask(depth_mask),
-            env=self.vis[1],
-            win='mask',
-            opts=dict(
-                title='Mask',
-                caption='Mask'))
-
-        depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
-        if save_to_disk:
-            py.io.write_image(depth_fig, osp.join(data_folder, 'depths.png'))
-        self.vis[0].plotlyplot(depth_fig, win="depths", env=self.vis[1])
-
-        pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
-        gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
-        if len(pred_seg) > 0 and len(gt_seg) > 0:
-            pred_seg = torch.sigmoid(pred_seg[0][0]).cpu()
-            gt_seg = gt_seg[0][0].cpu()
-            self.vis[0].heatmap(
-                gt_seg.squeeze().flip(0),
-                env=self.vis[1],
-                win='planar_seg_gt',
-                opts=dict(
-                    title='Plannar vs Non-Plannar GT',
-                    caption='Plannar vs Non-Plannar GT',
-                    xmax=1,
-                    width=512,
-                    height=256))
-            self.vis[0].heatmap(
-                pred_seg.squeeze().flip(0),
-                env=self.vis[1],
-                win='planar_seg_pred',
-                opts=dict(
-                    title='Plannar vs Non-Plannar Prediction',
-                    caption='Plannar vs Non-Plannar Prediction',
-                    xmax=1,
-                    width=512,
-                    height=256))
-
-        pred_normals = output.get(DataType.Normals, scale=1)
-        gt_normals = data.get(DataType.Normals, scale=1)
-        if len(pred_normals) > 0 and len(gt_normals) > 0:
-            pred_normals = pred_normals[0][0].cpu().detach()
-            pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
-            gt_normals = gt_normals[0][0].cpu().detach()
-            gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
-
-            normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
-            if save_to_disk:
-                py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
-
-            self.vis[0].plotlyplot(normals_fig, win="normals", env=self.vis[1])
-
-        pred_depth_normals = output.get(DataType.DepthNormals, scale=1)
-        gt_depth = data.get(DataType.Depth, scale=1)
-
-        if len(pred_depth_normals) > 0 and len(gt_depth) > 0:
-            gt_depth_normals = DepthToNormals(kernel_size=3, dilation=2, padding=2,
-                                              height=256, width=512)(gt_depth[0].cpu())
-            pred_depth_normals = pred_depth_normals[0][0].cpu().detach()
-            pred_depth_normals = stackVerticaly(pred_depth_normals).squeeze().flip(0).numpy()
-            gt_depth_normals = gt_depth_normals[0].cpu().detach()
-            gt_depth_normals = stackVerticaly(gt_depth_normals).squeeze().flip(0).numpy()
-
-            normals_fig = heatmapGrid([gt_depth_normals, pred_depth_normals],
-                                      ["Gt depth normals", "Pred depth normals"])
-            if save_to_disk:
-                py.io.write_image(normals_fig, osp.join(data_folder, 'depth_normals.png'))
-
-            self.vis[0].plotlyplot(normals_fig, win="depth_normals", env=self.vis[1])
-
-        pred_plane_param = output.get(DataType.PlaneParams, scale=1)
-        gt_plane_param = data.get(DataType.PlaneParams, scale=1)
-        if len(pred_plane_param) > 0 and len(gt_normals) > 0:
-            gt_plane_param = toPlaneParams(gt_normals[0], data.get(DataType.Depth, scale=1)[0])
-            pred_plane_param = pred_plane_param[0][0].cpu()
-            gt_plane_param = gt_plane_param[0].cpu()
-            self.vis[0].heatmap(
-                stackVerticaly(gt_plane_param).squeeze().flip(0),
-                env=self.vis[1],
-                win='plane_params_gt',
-                opts=dict(
-                    title='Plane Params GT',
-                    caption='Plane Params GT',
-                    width=512,
-                    height=768))
-            self.vis[0].heatmap(
-                stackVerticaly(pred_plane_param).squeeze().flip(0),
-                env=self.vis[1],
-                win='plane_params_pred',
-                opts=dict(
-                    title='Plane Params Prediction',
-                    caption='Plane Params Prediction',
-                    width=512,
-                    height=768))
-
-        planes = data.get(DataType.Planes)
-        if len(planes) > 0:
-            planes_data = planes[0][0].cpu()
-            planes_data = visualizePlanes(planes_data).squeeze().flip(0)
-            print(planes_data.size())
-            self.vis[0].image(
-                planes_data,
-                env=self.vis[1],
-                win='planes',
-                opts=dict(
-                    title='Planes GT',
-                    caption='Planes GT'))
-
     def visualize_metrics(self):
         '''
         Updates the metrics visualization
@@ -854,7 +681,8 @@ class MonoTrainer(object):
             win='error_metrics',
             update='append',
             opts=dict(
-                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error', 'Log RMS Error', "Sparse Pts. Abs Rel"]))
+                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error',
+                        'Log RMS Error', "Sparse Pts. Abs Rel"]))
 
         inliers = torch.FloatTensor([d1, d2, d3])
         inliers = inliers.view(1, -1)
@@ -949,3 +777,176 @@ class MonoTrainer(object):
             'checkpoint_{:03d}.pth'.format(self.epoch + 1))
         shutil.copyfile(checkpoint_path, history_path)
         print('Checkpoint saved')
+
+
+@pytorchDetachedProcess
+def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=True):
+    '''
+    Updates the output samples visualization
+    '''
+
+    data_folder = osp.join(directory, "visdom")
+    os.makedirs(data_folder, exist_ok=True)
+    visdom[0].save([visdom[1]])
+    rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
+    depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
+    pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
+    pred_depth *= depth_mask
+    pred_depth = pred_depth.squeeze().flip(0).numpy()
+
+    gt_depth = data.get(DataType.Depth, scale=1)[0][0]
+    gt_depth = gt_depth.cpu().detach()
+    gt_depth *= depth_mask
+    gt_depth = gt_depth.squeeze().flip(0).numpy()
+
+    for key, hist in loss_hist.items():
+        # print(key)
+        max_val = torch.max(hist[0]).item()
+        if max_val > 8:
+            max_val = 8.0
+        # print(key)
+        graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
+        if save_to_disk:
+            py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
+        visdom[0].plotlyplot(graph, win=key, env=visdom[1])
+
+    visdom[0].image(
+        visualize_rgb(rgb),
+        env=visdom[1],
+        win='rgb',
+        opts=dict(
+            title='Input RGB Image',
+            caption='Input RGB Image'))
+
+    visdom[0].image(
+        visualize_mask(depth_mask),
+        env=visdom[1],
+        win='mask',
+        opts=dict(
+            title='Mask',
+            caption='Mask'))
+
+    depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
+    if save_to_disk:
+        py.io.write_image(depth_fig, osp.join(data_folder, 'depths.png'))
+
+    visdom[0].plotlyplot(depth_fig, win="depths", env=visdom[1])
+    pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
+    gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
+    if len(pred_seg) > 0 and len(gt_seg) > 0:
+        pred_seg = torch.sigmoid(pred_seg[0][0]).cpu()
+        gt_seg = gt_seg[0][0].cpu()
+        visdom[0].heatmap(
+            gt_seg.squeeze().flip(0),
+            env=visdom[1],
+            win='planar_seg_gt',
+            opts=dict(
+                title='Plannar vs Non-Plannar GT',
+                caption='Plannar vs Non-Plannar GT',
+                xmax=1,
+                width=512,
+                height=256))
+        visdom[0].heatmap(
+            pred_seg.squeeze().flip(0),
+            env=visdom[1],
+            win='planar_seg_pred',
+            opts=dict(
+                title='Plannar vs Non-Plannar Prediction',
+                caption='Plannar vs Non-Plannar Prediction',
+                xmax=1,
+                width=512,
+                height=256))
+
+    pred_normals = output.get(DataType.Normals, scale=1)
+    gt_normals = data.get(DataType.Normals, scale=1)
+    if len(pred_normals) > 0 and len(gt_normals) > 0:
+        pred_normals = pred_normals[0][0].cpu().detach()
+        pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
+        gt_normals = gt_normals[0][0].cpu().detach()
+        gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
+        normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
+        if save_to_disk:
+            py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
+        visdom[0].plotlyplot(normals_fig, win="normals", env=visdom[1])
+
+    pred_depth_normals = output.get(DataType.DepthNormals, scale=1)
+    gt_depth2 = data.get(DataType.Depth, scale=1)
+    if len(pred_depth_normals) > 0 and len(gt_depth2) > 0:
+        gt_depth_normals = DepthToNormals(kernel_size=3, dilation=2, padding=2,
+                                          height=256, width=512)(gt_depth2[0].cpu())
+        pred_depth_normals = pred_depth_normals[0][0].cpu().detach()
+        pred_depth_normals = stackVerticaly(pred_depth_normals).squeeze().flip(0).numpy()
+        gt_depth_normals = gt_depth_normals[0].cpu().detach()
+        gt_depth_normals = stackVerticaly(gt_depth_normals).squeeze().flip(0).numpy()
+        normals_fig = heatmapGrid([gt_depth_normals, pred_depth_normals],
+                                  ["Gt depth normals", "Pred depth normals"])
+        if save_to_disk:
+            py.io.write_image(normals_fig, osp.join(data_folder, 'depth_normals.png'))
+        visdom[0].plotlyplot(normals_fig, win="depth_normals", env=visdom[1])
+
+    pred_plane_param = output.get(DataType.PlaneParams, scale=1)
+    gt_plane_param = data.get(DataType.PlaneParams, scale=1)
+    if len(pred_plane_param) > 0 and len(gt_normals) > 0:
+        gt_plane_param = toPlaneParams(gt_normals[0], data.get(DataType.Depth, scale=1)[0])
+        pred_plane_param = pred_plane_param[0][0].cpu()
+        gt_plane_param = gt_plane_param[0].cpu()
+        visdom[0].heatmap(
+            stackVerticaly(gt_plane_param).squeeze().flip(0),
+            env=visdom[1],
+            win='plane_params_gt',
+            opts=dict(
+                title='Plane Params GT',
+                caption='Plane Params GT',
+                width=512,
+                height=768))
+        visdom[0].heatmap(
+            stackVerticaly(pred_plane_param).squeeze().flip(0),
+            env=visdom[1],
+            win='plane_params_pred',
+            opts=dict(
+                title='Plane Params Prediction',
+                caption='Plane Params Prediction',
+                width=512,
+                height=768))
+
+    planes = data.get(DataType.Planes)
+    if len(planes) > 0:
+        planes_data = planes[0][0].cpu()
+        planes_data = visualizePlanes(planes_data).squeeze().flip(0)
+        print(planes_data.size())
+        visdom[0].image(
+            planes_data,
+            env=visdom[1],
+            win='planes',
+            opts=dict(
+                title='Planes GT',
+                caption='Planes GT'))
+
+
+@pytorchDetachedProcess
+def visualize_loss(visdom, batch_num, total_batches, loss_meters):
+    '''
+    Updates the loss visualization
+    '''
+    for key, loss_meter in loss_meters.items():
+        if not visdom[0].win_exists(key, env=visdom[1]):
+            visdom[0].line(
+                env=visdom[1],
+                X=torch.zeros(1, 1).long(),
+                Y=torch.zeros(1, 1).float(),
+                win=key,
+                opts=dict(
+                    title=key + ' Plot',
+                    markers=False,
+                    xlabel='Iteration',
+                    ylabel='Loss',
+                    legend=[key]))
+        else:
+            visdom[0].line(
+                env=visdom[1],
+                X=torch.tensor([total_batches]),
+                Y=torch.tensor([loss_meter.avg]),
+                win=key,
+                update='append',
+                opts=dict(
+                    legend=[key]))

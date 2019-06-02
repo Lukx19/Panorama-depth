@@ -22,7 +22,7 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 100
+visualization_freq = 50
 validation_sample_freq = -1
 
 loss_scales = parseLossScales(args.loss_scales)

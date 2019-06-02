@@ -18,6 +18,9 @@ import plotly.graph_objs as go
 import plotly as py
 from PIL import Image
 import math
+from multiprocessing import Process
+from copy import deepcopy
+import annotated_data
 
 
 def mkdirs(path):
@@ -87,8 +90,8 @@ def load_encoder_weights(model, checkpoint_path):
     checkpoint = torch.load(checkpoint_path)
     if "state_dict" in checkpoint:
         weights = checkpoint["state_dict"]
-        encoder_layers = filter(lambda val: ("encoder" in val[0]
-                                             or "input" in val[0]), weights.items())
+        encoder_layers = filter(lambda val: ("encoder" in val[0] or
+                                             "input" in val[0]), weights.items())
         encoder_layers = dict(encoder_layers)
         print("Loaded encoder layers:", encoder_layers.keys())
         load_partial_model(model, encoder_layers)
@@ -117,8 +120,8 @@ def set_caffe_param_mult(m, base_lr, base_weight_decay):
     param_list = []
     for name, params in m.named_parameters():
         if name.find('bias') != -1:
-            param_list.append({'params': params, 'lr': 2 *
-                               base_lr, 'weight_decay': 0.0})
+            param_list.append({'params': params, 'lr': 2
+                               * base_lr, 'weight_decay': 0.0})
         else:
             param_list.append({'params': params, 'lr': base_lr,
                                'weight_decay': base_weight_decay})
@@ -153,19 +156,26 @@ def saveTensorDepth(filename, tensor, scale):
     # img.save(filename)
 
 
-def toDevice(obj, device):
+def toDevice(obj, device, copy=False, any_type=False):
     if isinstance(obj, torch.Tensor):
-        return obj.to(device)
+        return obj.to(device, copy=copy)
     elif isinstance(obj, list) or isinstance(obj, tuple):
-        res = [toDevice(sub_obj, device) for sub_obj in obj]
-        if isinstance(obj, tuple):
-            return tuple(res)
-        else:
-            return res
+        return type(obj)([toDevice(sub_obj, device, copy, any_type)
+                          for sub_obj in obj])
+
     elif isinstance(obj, dict):
-        return type(obj)([(k, toDevice(tensor, device)) for k, tensor in obj.items()])
+        return type(obj)([(k, toDevice(tensor, device, copy, any_type))
+                          for k, tensor in obj.items()])
+    elif isinstance(obj, annotated_data.AnnotatedData):
+        return obj.cpu()
     else:
-        raise Exception("toDevice is missing specialization for this type ", type(obj))
+        if any_type:
+            try:
+                return deepcopy(obj)
+            except TypeError:
+                return obj
+        else:
+            raise Exception("toDevice is missing specialization for this type ", type(obj))
 
 
 def uncolapseMask(tensor):
@@ -187,8 +197,8 @@ def plot_grad_flow(named_parameters, filename):
     max_grads = []
     layers = []
     for n, p in named_parameters:
-        if(p.requires_grad and p.is_leaf
-                and p.grad is not None and("bias" not in n)):
+        if(p.requires_grad and p.is_leaf and
+                p.grad is not None and("bias" not in n)):
             layers.append(n)
             ave_grads.append(p.grad.abs().mean())
             max_grads.append(p.grad.abs().max())
@@ -401,3 +411,14 @@ def mergeInDict(dict_a, dict_b):
         if key not in dict_a:
             dict_a[key] = val
     return dict_a
+
+
+def pytorchDetachedProcess(func):
+    def funcWrapper(*args, **kwargs):
+        data_args = toDevice(args, torch.device('cpu'), copy=True, any_type=True)
+        data_kwargs = toDevice(kwargs, torch.device('cpu'), copy=True, any_type=True)
+        process = Process(target=func, args=data_args, kwargs=data_kwargs)
+
+        process.daemon = True
+        process.start()
+    return funcWrapper
