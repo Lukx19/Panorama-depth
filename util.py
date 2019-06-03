@@ -18,7 +18,7 @@ import plotly.graph_objs as go
 import plotly as py
 from PIL import Image
 import math
-from multiprocessing import Process
+from threading import Thread
 from copy import deepcopy
 import annotated_data
 
@@ -417,8 +417,7 @@ def pytorchDetachedProcess(func):
     def funcWrapper(*args, **kwargs):
         data_args = toDevice(args, torch.device('cpu'), copy=True, any_type=True)
         data_kwargs = toDevice(kwargs, torch.device('cpu'), copy=True, any_type=True)
-        process = Process(target=func, args=data_args, kwargs=data_kwargs)
-
-        process.daemon = True
-        process.start()
+        thread = Thread(target=func, args=data_args, kwargs=data_kwargs)
+        thread.daemon = True
+        thread.start()
     return funcWrapper
