@@ -546,20 +546,15 @@ class PlaneNormSegLoss(nn.Module):
         planeMean = createPlaneMean(mask, planes)
 
         pred_points = self.to3d(pred_depth)
-        assert torch.isfinite(pred_depth).all()
         with torch.no_grad():
             gt_points = self.to3d(gt_depth)
 
         # TODO: Use ground truth points which are distance to plane and not GT distance in general.
         #  This should improve performance on low quality GT data
-        assert torch.isfinite(gt_normals).all()
-        assert torch.isfinite(pred_points).all()
         distance = (pred_points - gt_points) * gt_normals
-        assert torch.isfinite(distance).all()
         distace_to_gt_plane = (torch.sum(distance, dim=1))
-        assert torch.isfinite(distace_to_gt_plane).all()
         distace_to_gt_plane = distace_to_gt_plane ** 2
-        assert torch.isfinite(distace_to_gt_plane).all()
+
         distace_to_gt_plane *= plane_mask
 
         histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach()
