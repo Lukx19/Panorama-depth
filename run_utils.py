@@ -47,6 +47,18 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
         model = RectNet(in_channels, cspn=False, normal_est=True,
                         segmentation_est=True, calc_planes=True,
                         normals_est_type="sphere")
+    elif network_type == 'RectNetSmoothSphere':
+        torch.autograd.set_detect_anomaly(True)
+        model = RectNet(in_channels, cspn=False, normal_est=True,
+                        segmentation_est=True, calc_planes=False,
+                        normals_est_type="sphere", normal_smoothing=True)
+
+    elif network_type == 'RectNetSmooth':
+        torch.autograd.set_detect_anomaly(True)
+        model = RectNet(in_channels, cspn=False, normal_est=True,
+                        segmentation_est=True, calc_planes=False,
+                        normals_est_type="standart", normal_smoothing=True)
+
     elif network_type == 'RectNetPad':
         model = RectNet(in_channels, cspn=False, reflection_pad=True)
         alpha_list = [0.535, 0.272]

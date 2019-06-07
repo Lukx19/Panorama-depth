@@ -17,6 +17,7 @@ class DataType(Enum):
     NormalsClass = 9
     NormalsEmbed = 10
     DepthNormals = 11
+    Guidance = 12
 
 
 class AnnotatedData:

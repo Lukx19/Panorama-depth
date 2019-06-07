@@ -304,16 +304,19 @@ def imageHeatmap(rgb, heatmap, title="", colorscheme="Reds", max_val=8):
     width = 2 * heatmap.size(1)
     # image = tvt.functional.to_pil_image((rgb.detach() * 255).byte())
     real_max = torch.max(heatmap).item()
+    real_min = torch.min(heatmap).item()
+    if max_val is None:
+        max_val = real_max
     heatmap = go.Heatmap(
         z=heatmap.detach().numpy(),
         colorscale=colorscheme,
         opacity=1,
-        zmin=0,
+        zmin=real_min,
         zmax=max_val,
     )
 
     steps = []
-    for num in np.linspace(0, real_max, 50):
+    for num in np.linspace(real_min, real_max, 50):
         step = dict(
             method='restyle',
             args=['zmax', num],

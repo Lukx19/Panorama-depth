@@ -22,7 +22,7 @@ import colorsys
 import numpy as np
 import json
 import plotly as py
-
+from visualizations import panoDepthToPcl, savePcl
 # From https://github.com/fyu/drn
 
 
@@ -810,6 +810,14 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
             py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
         visdom[0].plotlyplot(graph, win=key, env=visdom[1])
 
+    for i, (scale, guidance) in enumerate(output.queryType(DataType.Guidance)):
+
+        key = "guidance_" + str(i)
+        graph = imageHeatmap(rgb, guidance[0].cpu().squeeze().flip(0), title=key, max_val=None)
+        if save_to_disk:
+            py.io.write_image(graph, osp.join(data_folder, key + '.png'))
+        visdom[0].plotlyplot(graph, win=key, env=visdom[1])
+
     visdom[0].image(
         visualize_rgb(rgb),
         env=visdom[1],
@@ -921,6 +929,28 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
             opts=dict(
                 title='Planes GT',
                 caption='Planes GT'))
+
+    rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
+    rgb = rgb.permute(1, 2, 0).numpy() * 250
+    pred_normals = output.get(DataType.Normals, scale=1)
+    if len(pred_normals) > 0:
+        pred_normals = pred_normals[0][0].cpu().detach()
+        pred_normals = torch.squeeze(pred_normals.permute(1, 2, 0)).numpy()
+    else:
+        pred_normals = None
+
+    for i, depth in enumerate(output.get(DataType.Depth, scale=1)):
+        pred_depth = depth[0].cpu().detach()
+        pred_depth = torch.squeeze(pred_depth.permute(1, 2, 0)).numpy()
+        pcl = panoDepthToPcl(pred_depth, rgb, normals=pred_normals)
+        savePcl(pcl[0], pcl[1], osp.join(data_folder, 'pcl_cloud_' + str(i) + '.ply'),
+                normals=pcl[2])
+
+    gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu().detach()
+    gt_depth = torch.squeeze(gt_depth.permute(1, 2, 0)).numpy()
+
+    pcl_gt = panoDepthToPcl(gt_depth, rgb)
+    savePcl(pcl_gt[0], pcl_gt[1], osp.join(data_folder, 'pcl_gt_cloud.ply'))
 
 
 @pytorchDetachedProcess

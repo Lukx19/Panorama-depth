@@ -22,7 +22,7 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 100
+visualization_freq = 50
 validation_sample_freq = -1
 
 loss_scales = parseLossScales(args.loss_scales)
@@ -100,5 +100,6 @@ trainer = MonoTrainer(
 if args.encoder_weights is not None:
     load_encoder_weights(network, args.encoder_weights)
 # trainer.visualizeNetwork(args.checkpoint)
-trainer.train(args.checkpoint, args.only_weights)
+with torch.autograd.detect_anomaly():
+    trainer.train(args.checkpoint, args.only_weights)
 # test(experiment_name)

@@ -193,16 +193,16 @@ def expSphere(x):
     Tensor Bx3xHxW
     """
     batchsize, _, _, _ = x.size()
-    x = torch.exp(x)
+    x = torch.exp(x - torch.max(x))
     # Trick for numeric stability (norm won't becomes 0)
-    x = x + torch.sign(x) * 1e-4
+    # x = x + torch.sign(x) * 1e-4
+    x = x + 1e-6
     norm = torch.norm(x, p=2, dim=1, keepdim=True)
-    norm = norm + (1 - torch.sign(torch.abs(norm))) * 1e-4
-    assert not torch.isnan(x).any()
-    assert not torch.isnan(norm).any()
+    norm = norm + (1 - torch.sign(torch.abs(norm)))
+
     norm = norm.detach()
     emb = x / norm
-    assert not torch.isnan(emb).any()
+
     return emb
 
 
@@ -284,7 +284,6 @@ class ExpSegNormals(nn.Module):
     def forward(self, x):
         b, _, h, w = x.size()
         emb = self.normals_emb(x)
-        assert(not torch.isnan(emb).any())
         with torch.no_grad():
             dirs = torch.cat([self.dirs for i in range(b)], dim=0)
 
@@ -296,7 +295,6 @@ class ExpSegNormals(nn.Module):
         # normal inference
         labels = torch.argmax(classes.detach(), dim=1, keepdim=True)
         signs = labelToSign(labels)
-        assert(not torch.isnan(signs).any())
         normals = emb * signs
         return {
             "normals": torch.reshape(normals, (b, 3, h, w)),
@@ -309,7 +307,8 @@ class RectNet(nn.Module):
 
     def __init__(self, in_channels, cspn=False, reflection_pad=False,
                  normal_est=False, segmentation_est=False,
-                 calc_planes=False, normals_est_type='standart'):
+                 calc_planes=False, normals_est_type='standart',
+                 normal_smoothing=False):
         super(RectNet, self).__init__()
         self.height = 256
         self.width = 512
@@ -388,10 +387,15 @@ class RectNet(nn.Module):
         self.calc_normals = normal_est
         self.calc_planes = calc_planes
         self.calc_segmentation = segmentation_est
+        self.normal_smoothing = normal_smoothing
 
         if self.calc_planes:
             self.calc_normals = True
             self.calc_segmentation = True
+        if self.normal_smoothing:
+            self.calc_normals = True
+            self.calc_planes = False
+
         self.normals_type = normals_est_type
         if self.calc_normals:
             if self.normals_type == "standart":
@@ -405,6 +409,19 @@ class RectNet(nn.Module):
             else:
                 raise ValueError("Unknown type of normal prediction module")
 
+        if self.normal_smoothing:
+            self.smoothing_l = nn.ModuleList([NormalsConv(self.height, self.width,
+                                                          padding=i, kernel_size=3, dilation=i)
+                                              for i in [8, 8, 8]])
+            # self.smoothing = NormalsConv(self.height, self.width,
+            #                              padding=2, kernel_size=3, dilation=2)
+            self.prediction_planar = nn.Conv2d(
+                64, 8, 3, padding=1)
+            # self.prediction_planar2 = ConvELUBlock(
+            # 10, 1, 1, padding=0, reflection_pad=reflection_pad)
+            self.prediction_planar2 = nn.Conv2d(10, 1, 3, padding=1)
+            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+
         if self.calc_segmentation:
             self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
             self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
@@ -412,7 +429,8 @@ class RectNet(nn.Module):
 
         if self.calc_planes:
             self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
-            self.prediction_planar = nn.Conv2d(65, 1, 3, padding=1)
+            self.fusion = FilterBlock(in_channels=2)
+            # self.prediction_planar = nn.Conv2d(66, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
             # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
@@ -502,7 +520,7 @@ class RectNet(nn.Module):
         outputs = {}
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
-        outputs["depth_normals"] = self.depth_normals(opt_depth)
+        # outputs["depth_normals"] = self.depth_normals(opt_depth)
         if self.calc_normals:
             if self.normals_type == 'deep':
                 normals_input = encoder2_2_out
@@ -536,14 +554,38 @@ class RectNet(nn.Module):
             pred_seg = self.seg_cov3(seg_cat)
             outputs["segmentation"] = pred_seg
 
+        if self.normal_smoothing:
+            smooth_depth = opt_depth.clone().detach()
+            normals = outputs["normals"].clone().detach()
+            seg = outputs["segmentation"].clone().detach()
+            for layer in self.smoothing_l:
+                smooth_depth = layer(smooth_depth, normals)
+
+            planes = inputs[DataType.Planes]
+            planar_depth = self.planar_to_depth(opt_depth.clone().detach(), planes,
+                                                pred_seg.clone().detach(),
+                                                pred_normals.clone().detach())
+            outputs["depth1x_planar"] = planar_depth
+            outputs["depth1x_smooth"] = smooth_depth
+            depth_map = self.prediction_planar(decoder1_2_out)
+            feat_planar = torch.cat((planar_depth, seg, depth_map), dim=1)
+            refined_depth = self.prediction_planar2(feat_planar)
+            outputs["depth_ref"] = refined_depth
+
         if (self.calc_normals and self.calc_planes
                 and DataType.Planes in inputs and self.calc_segmentation):
             planes = inputs[DataType.Planes]
-            planar_depth = self.planar_to_depth(opt_depth, planes,
-                                                pred_seg, pred_normals)
+            planar_depth = self.planar_to_depth(opt_depth.detach(), planes,
+                                                pred_seg.detach(), pred_normals.detach())
+            good_numbers = torch.isfinite(planar_depth).all().item()
+            if not good_numbers:
+                print("found inifinst")
             # outputs["depth_planar"] = planar_depth
-            feat_planar = torch.cat((planar_depth, decoder1_2_out), dim=1)
-            refined_depth = self.prediction_planar(feat_planar)
+            feat_planar = torch.cat((planar_depth, opt_depth), dim=1)
+            residuum = torch.sigmoid(self.fusion(feat_planar))
+            refined_depth = planar_depth * residuum + (1 - residuum) * opt_depth
+            outputs["guidance"] = residuum
+            outputs["guidance2"] = torch.sigmoid(pred_seg) * residuum
             outputs["depth_ref"] = refined_depth
             # outputs["depth1x"] = refined_depth
 
@@ -569,11 +611,21 @@ class RectNet(nn.Module):
             data.add(outputs["depth_planar"], DataType.Depth)
         if "depth_ref" in outputs:
             data.add(outputs["depth_ref"], DataType.Depth)
+        if "depth1x_planar" in outputs:
+            data.add(outputs["depth1x_planar"], DataType.Depth)
+
+        if "depth1x_smooth" in outputs:
+            data.add(outputs["depth1x_smooth"], DataType.Depth)
 
         data.add(outputs["depth1x"], DataType.Depth)
         data.add(outputs["depth2x"], DataType.Depth, scale=2)
         if "depth_normals" in outputs:
             data.add(outputs["depth_normals"], DataType.DepthNormals)
+
+        if "guidance" in outputs:
+            data.add(outputs["guidance"], DataType.Guidance)
+        if "guidance2" in outputs:
+            data.add(outputs["guidance2"], DataType.Guidance)
         return data
 
 
@@ -1001,6 +1053,19 @@ class DoubleBranchNet(nn.Module):
 # -----------------------------------------------------------------------------
 
 
+class FilterBlock(nn.Module):
+    def __init__(self, in_channels):
+        super(FilterBlock, self).__init__()
+        self.block = nn.Sequential(
+            ConvELUBlock(in_channels, 64, 5, padding=2),
+            ConvELUBlock(64, 32, 1, padding=0),
+            nn.Conv2d(32, 1, 3, padding=1)
+        )
+
+    def forward(self, x):
+        return self.block(x)
+
+
 class CircularPad1d(nn.Module):
     def __init__(self, padding):
         super(CircularPad1d, self).__init__()
@@ -1250,6 +1315,14 @@ class PlanarToDepth(nn.Module):
         super(PlanarToDepth, self).__init__()
         self.to3d = Depth2Points(height, width)
 
+    def normalizeRange(self, depth, abs_range=8.0):
+        with torch.no_grad():
+            valid_pixels = torch.ones_like(depth)
+            valid_pixels[depth > abs_range] = 0.0
+            valid_pixels[depth < -abs_range] = 0.0
+        ranged_depths = depth * valid_pixels
+        return ranged_depths
+
     def forward(self, depth, planes, segmentation, normals):
         points = self.to3d(depth)
         rays = self.to3d(torch.ones_like(depth))
@@ -1271,22 +1344,22 @@ class PlanarToDepth(nn.Module):
         norm = torch.sum(rays * (avg_normals.detach()), dim=2, keepdim=True)
         # print(norm.size(), planes_r.size(), rays.size(), torch.min(norm))
         norm = norm + (1 - torch.sign(planes_r.detach())) * eps
-        assert((norm != 0).any())
-        # assert((torch.abs(norm) > eps).any())
 
-        assert(not torch.isnan(planes_bin).any())
-        assert(not torch.isnan(centroids).any())
-        assert(not torch.isnan(avg_normals).any())
+        centroid_normals = planes_bin * centroids * avg_normals
+        planar_depths = torch.sum(centroid_normals, dim=2, keepdim=True) * planes_bin
+        planar_depths = self.normalizeRange(planar_depths)
 
-        planar_depths = torch.sum(planes_bin * centroids * avg_normals, dim=2, keepdim=True)
-        # print(torch.min(planar_depths))
-        assert(not torch.isnan(planar_depths).any())
         planar_depths = planar_depths / norm
+        planar_depths = torch.where(torch.isfinite(planar_depths),
+                                    planar_depths, torch.zeros_like(planar_depths))
+        # assert(not torch.isnan(planar_depths).any())
+        # assert torch.isfinite(planar_depths).all()
+
         # planar_depths = torch.abs(planar_depths) * planes_bin
-        assert(not torch.isnan(planar_depths).any())
         planar_depths = planar_depths * planes_bin
+        # assert torch.isfinite(planar_depths).all()
         planar_depths = torch.reshape(planar_depths, (b, p, -1))
-        assert(not torch.isnan(planar_depths).any())
+        # assert(not torch.isnan(planar_depths).any())
         # print("negative:", torch.sum(planar_depths > eps), torch.sum(planar_depths < -eps))
         # print(planar_depths.size(), torch.min(planar_depths), torch.max(planar_depths))
         # assert(torch.min(planar_depths) >= 0)
@@ -1309,12 +1382,12 @@ class PlanarToDepth(nn.Module):
         # seg_planar = torch.sigmoid(segmentation)
         # valid_pixels[seg_planar < 0.5] = 0
 
-        assert(not torch.isnan(planar_depths).any())
+        # assert(not torch.isnan(planar_depths).any())
         planar_depths = planar_depths * valid_pixels
         # planar_depths += torch.isnan(planar_depths.detach()).float()
         # seg = torch.sign(planar_depths.clone().detach())
         # depth_res = seg * planar_depths + (1 - seg) * depth
-        assert(not torch.isnan(valid_pixels).any())
+        # assert(not torch.isnan(valid_pixels).any())
         # assert(not torch.isnan(seg).any())
         # assert(not torch.isnan(depth).any())
         # assert(not torch.isnan(depth_res).any())
@@ -1414,3 +1487,52 @@ class DepthToNormals(nn.Module):
             raise ValueError("Unknown normal estimator type " + self.estimate_type)
 
         return normals
+
+
+class NormalsConv(nn.Module):
+    def __init__(self, height, width, kernel_size, dilation=1, padding=0):
+        super(NormalsConv, self).__init__()
+        self.unfold = torch.nn.Unfold(kernel_size=kernel_size, dilation=dilation,
+                                      padding=padding, stride=1)
+        # self.fold = torch.nn.Fold(output_size=(height, width), kerne_size=kernel_size,
+        #                           dilation=dilation, padding=padding, stride=1)
+        self.height = height
+        self.width = width
+        self.to3d = Depth2Points(height, width)
+        if type(kernel_size) is int:
+            self.kernel_size = (kernel_size, kernel_size)
+        else:
+            self.kernel_size = kernel_size
+        # h, w = self.kernel_size
+        # self.ones = nn.Parameter(torch.ones((h * w, 1), requires_grad=False))
+        # self.eye = nn.Parameter(torch.eye(3), requires_grad=False)
+        # self.rays = nn.Parameter(self.to3d(torch.ones(1, 1, height, width)), requires_grad=False)
+
+    def forward(self, depth, normals):
+        _, _, height, width = depth.size()
+        points = self.to3d(depth)
+        rays = self.to3d(torch.ones_like(depth))
+        norm_pts = torch.sum(normals * points, dim=1, keepdim=True)
+        unfolded = self.unfold(torch.cat((norm_pts, rays, normals), dim=1))
+        b, n, k = unfolded.size()
+        Kh, Kw = self.kernel_size
+        kernel_mid = Kw * (Kh // 2) + Kw // 2
+
+        unfolded = torch.transpose(unfolded, dim0=1, dim1=2)
+        unfolded = torch.reshape(unfolded, (b, k, 7, Kh * Kw))
+        norms_pts_ker, rays_ker, normals_ker = torch.split(unfolded, [1, 3, 3], dim=2)
+        rays_i = rays_ker[:, :, :, kernel_mid:kernel_mid + 1]
+        normals_i = normals_ker[:, :, :, kernel_mid:kernel_mid + 1]
+
+        # Calculates weights between middle normals and the rest of normals in kernel.
+        # If are normals similar resulting weight will be 1.
+        normal_similarity = torch.sum(normals_i * normals_ker, dim=2, keepdim=True)
+        # print("minmax normal sim: ", torch.min(normal_similarity), torch.max(normal_similarity))
+        norm = torch.sum(rays_i * normals_ker.detach(), dim=2, keepdim=True)
+        norm = norm + (1 - torch.sign(torch.abs(norm))) * 1e-4
+        corrected_depths = norms_pts_ker / norm
+        similarity_norm = torch.sum(normal_similarity, dim=3) + 1e-4
+        corrected_depths = torch.sum(corrected_depths * normal_similarity, dim=3) / similarity_norm
+        corrected_depths = torch.reshape(corrected_depths, (b, 1, height, width))
+        corrected_depths = torch.clamp(corrected_depths, min=0.0, max=8.0)
+        return corrected_depths

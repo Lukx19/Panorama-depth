@@ -184,6 +184,17 @@ def l2Loss(pred, target, mean_fce=None):
     # print(val.size())
     return mean_fce(val)
 
+
+def huberLoss(pred, target, mask):
+    x = pred - target
+    x = x * mask
+    abs_val = torch.abs(x)
+    treshold = 1 / 5 * torch.max(abs_val)
+    treshold_mask = (abs_val <= treshold).float()
+    below_tresh = abs_val * treshold_mask
+    above_tresh = (1 - treshold_mask) * ((x**2 + treshold**2) / (2 * treshold))
+    return below_tresh + above_tresh
+
 # https://github.com/kmaninis/OSVOS-PyTorch
 
 
@@ -486,8 +497,8 @@ class PlaneNormSegLoss(nn.Module):
         self.to3d = Depth2Points(height, width)
         # self.sobel = Sobel()
         self.normal_loss = normal_loss
-        self.grad_loss = GradLoss(all_levels=True, adaptive=False)
-        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
+        self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
+        # self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -504,9 +515,9 @@ class PlaneNormSegLoss(nn.Module):
         plane_mask = torch.sign(torch.sum(planes, dim=1))
         losses, histograms = self.grad_loss(predictions, data)
 
-        l, h = self.depth_cosine_loss(predictions, data)
-        losses = mergeInDict(losses, l)
-        histograms = mergeInDict(histograms, h)
+        # l, h = self.depth_cosine_loss(predictions, data)
+        # losses = mergeInDict(losses, l)
+        # histograms = mergeInDict(histograms, h)
         # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
         #     gt = data.get(DataType.Depth, scale=scale)[0]
         #     mask = data.get(DataType.Mask, scale=scale)[0]
@@ -535,13 +546,20 @@ class PlaneNormSegLoss(nn.Module):
         planeMean = createPlaneMean(mask, planes)
 
         pred_points = self.to3d(pred_depth)
+        assert torch.isfinite(pred_depth).all()
         with torch.no_grad():
             gt_points = self.to3d(gt_depth)
 
         # TODO: Use ground truth points which are distance to plane and not GT distance in general.
         #  This should improve performance on low quality GT data
-
-        distace_to_gt_plane = (torch.sum((pred_points - gt_points) * gt_normals, dim=1)) ** 2
+        assert torch.isfinite(gt_normals).all()
+        assert torch.isfinite(pred_points).all()
+        distance = (pred_points - gt_points) * gt_normals
+        assert torch.isfinite(distance).all()
+        distace_to_gt_plane = (torch.sum(distance, dim=1))
+        assert torch.isfinite(distace_to_gt_plane).all()
+        distace_to_gt_plane = distace_to_gt_plane ** 2
+        assert torch.isfinite(distace_to_gt_plane).all()
         distace_to_gt_plane *= plane_mask
 
         histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach()

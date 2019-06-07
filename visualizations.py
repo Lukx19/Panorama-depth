@@ -48,15 +48,20 @@ def getRotationMatrix(axis, theta):
     return np.eye(4, 4)
 
 
-def savePcl(points, rgb, file):
+def savePcl(points, rgb, file, normals=None):
     encoded = []
+    pt_count = points.shape[0]
+
     if rgb is None or len(rgb) == 0:
-        for pt in points:
-            encoded.append("%f %f %f %d %d %d 0\n" % (pt[0], pt[1], pt[2], 250, 250, 250))
-    else:
-        for pt, color in zip(points, rgb):
-            encoded.append("%f %f %f %d %d %d 0\n" %
-                           (pt[0], pt[1], pt[2], color[0], color[1], color[2]))
+        rgb = np.ones((pt_count, 3)) * 250
+
+    if normals is None or len(normals) == 0:
+        normals = np.zeros((pt_count, 3))
+
+    for pt, normal, color in zip(points, normals, rgb):
+        encoded.append("%f %f %f %f %f %f %d %d %d 0\n" %
+                       (pt[0], pt[1], pt[2], normal[0], normal[1], normal[2],
+                        color[0], color[1], color[2]))
 
     with open(file, "w") as file:
         file.write('''ply
@@ -65,6 +70,9 @@ def savePcl(points, rgb, file):
             property float x
             property float y
             property float z
+            property float nx
+            property float ny
+            property float nz
             property uchar red
             property uchar green
             property uchar blue
@@ -143,9 +151,10 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
     return [points, colors]
 
 
-def panoDepthToPcl(depth, rgb, scale=1):
+def panoDepthToPcl(depth, rgb, normals=None, scale=1):
     points = []
     colors = []
+    n = []
     height, width = depth.shape
 
     # Camera rotation angles
@@ -174,7 +183,12 @@ def panoDepthToPcl(depth, rgb, scale=1):
                 colors.append(rgb[v, u])
             else:
                 colors.append([250, 250, 250])
-    return [np.array(points), np.array(colors)]
+
+            if normals is not None:
+                n.append(normals[v, u])
+            else:
+                n.append([0, 0, 0])
+    return [np.array(points), np.array(colors), np.array(n)]
 
 
 def saveDepthMaps(rgb, gt, pred, filename):
