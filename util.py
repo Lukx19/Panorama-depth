@@ -424,3 +424,31 @@ def pytorchDetachedProcess(func):
         thread.daemon = True
         thread.start()
     return funcWrapper
+
+
+def PCA(data, k=2):
+    """Calculates PCA on data
+
+    Parameters
+    ----------
+    data : Tensor BxCxN
+        PCA will be caluclated over C and N dimention
+    k : int, optional
+        number of dimentions to keep after PCA , by default 2
+
+    Returns
+    -------
+    [type]
+        [description]
+    """
+    # preprocess the data
+    results = []
+    for batch_id in range(data.size(0)):
+        X = data[batch_id, :, :]
+        X_mean = torch.mean(X, dim=0, keepdim=True)
+        X = X - X_mean
+        # svd
+        U, S, V = torch.svd(torch.t(X))
+        results.append(torch.mm(X, U[:, :k]))
+
+    return torch.stack(results, dim=0)
