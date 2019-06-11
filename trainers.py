@@ -864,8 +864,6 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
         graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
         file = osp.join(data_folder, key + '_hist.json')
         py.io.write_json(graph, file)
-        # with open(file, mode="w") as f:
-        #     f.write(json.dumps(graph))
 
         if save_to_disk:
             py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
@@ -876,8 +874,6 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
         key = "guidance_" + str(i)
         graph = imageHeatmap(rgb, guidance[0].cpu().squeeze().flip(0), title=key, max_val=None)
         file = osp.join(data_folder, key + '.json')
-        # with open(file, mode="w") as f:
-        #     f.write(json.dumps(graph))
         py.io.write_json(graph, file)
 
         if save_to_disk:
@@ -905,8 +901,6 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
     file = osp.join(data_folder, 'depths.json')
     py.io.write_json(depth_fig, file)
-    # with open(file, mode="w") as f:
-    #     f.write(json.dumps(depth_fig))
 
     if save_to_disk:
         py.io.write_image(depth_fig, osp.join(data_folder, 'depths.png'))
@@ -1041,8 +1035,6 @@ def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
         graph = linePlot([(key, tracker.x, tracker.y, None)])
         file = osp.join(data_folder, key + '.json')
         py.io.write_json(graph, file)
-        # with open(file, mode="w") as f:
-        #     f.write(json.dumps(graph))
 
         if save_to_disk:
             py.io.write_image(graph, osp.join(data_folder, key + '.png'))
