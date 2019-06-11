@@ -1,7 +1,7 @@
 import torch
 import torch.nn.functional as F
 import time
-
+from tqdm import tqdm
 import math
 import shutil
 import os.path as osp
@@ -9,10 +9,13 @@ import os
 
 import util
 from metrics import (abs_rel_error, delta_inlier_ratio,
-                     lin_rms_sq_error, log_rms_sq_error, sq_rel_error)
+                     lin_rms_sq_error, log_rms_sq_error,
+                     sq_rel_error, directed_depth_error,
+                     depth_boundary_error, planarity_errors,
+                     delta_normal_angle_ratio, normal_stats)
 
 from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
-                  stackVerticaly, heatmapGrid, pytorchDetachedProcess)
+                  stackVerticaly, heatmapGrid, pytorchDetachedProcess, linePlot)
 from network import toPlaneParams, DepthToNormals
 import torchvision.transforms as Tt
 from torchvision.utils import make_grid
@@ -26,6 +29,23 @@ from visualizations import panoDepthToPcl, savePcl
 # From https://github.com/fyu/drn
 
 
+class SeriesData(object):
+    def __init__(self):
+        self.reset()
+
+    def update(self, x, y, std=0):
+        self.x.append(x)
+        self.y.append(y)
+        self.std.append(std)
+        self.steps += 1
+
+    def reset(self):
+        self.steps = 0
+        self.x = []
+        self.y = []
+        self.std = []
+
+
 class AverageMeter(object):
     """Computes and stores the average and current value"""
 
@@ -37,24 +57,38 @@ class AverageMeter(object):
         self.avg = 0
         self.sum = 0
         self.count = 0
+        self.std = 0
+        self.elems = []
 
     def update(self, val, n=1):
+        # print(val)
+        if isinstance(val, (torch.Tensor)):
+            val = val.cpu().item()
         self.val = val
         self.sum += val * n
         self.count += n
         self.avg = self.sum / self.count
+        self.elems.append(val)
+        # print(self.elems)
+        self.std = np.std(self.elems)
 
     def to_dict(self):
         return {'val': self.val,
                 'sum': self.sum,
                 'count': self.count,
-                'avg': self.avg}
+                'avg': self.avg,
+                'std': self.std,
+                'elems': json.dumps(self.elems)
+                }
 
     def from_dict(self, meter_dict):
         self.val = meter_dict['val']
         self.sum = meter_dict['sum']
         self.count = meter_dict['count']
         self.avg = meter_dict['avg']
+        if 'std' in meter_dict:
+            self.elems = json.loads(meter_dict["elems"])
+            self.std = meter_dict["std"]
 
 
 def resetAverageMeters(average_meters):
@@ -304,14 +338,57 @@ class MonoTrainer(object):
         self.checkpoint_dir = checkpoint_dir
 
         # Accuracy metric trackers
-        self.abs_rel_error_meter = AverageMeter()
-        self.sq_rel_error_meter = AverageMeter()
-        self.lin_rms_sq_error_meter = AverageMeter()
-        self.log_rms_sq_error_meter = AverageMeter()
-        self.d1_inlier_meter = AverageMeter()
-        self.d2_inlier_meter = AverageMeter()
-        self.d3_inlier_meter = AverageMeter()
-        self.sparse_abs_rel_error_meter = AverageMeter()
+        self.err_meters = {
+            'Abs. Rel. Error': AverageMeter(),
+            'Sq. Rel. Error': AverageMeter(),
+            'Linear RMS Error': AverageMeter(),
+            'Log RMS Error': AverageMeter(),
+            "Sparse Pts. Abs Rel": AverageMeter(),
+            "Direct Depth M Err": AverageMeter(),
+            "Direct Depth P Err": AverageMeter(),
+            "Direct Depth 0 Err": AverageMeter(),
+            "Depth Boundary Err": AverageMeter(),
+            "Normal Mean": AverageMeter(),
+            "Normal Median": AverageMeter(),
+            "Plane Flatness Err": AverageMeter(),
+            "Plane Orientation Err": AverageMeter(),
+        }
+
+        self.acc_meters = {
+            "Inlier D1": AverageMeter(),
+            "Inlier D2": AverageMeter(),
+            "Inlier D3": AverageMeter(),
+            "Depth Boundary Acc": AverageMeter(),
+            "Normal Angle 11.25": AverageMeter(),
+            "Normal Angle 22.5": AverageMeter(),
+            "Normal Angle 30": AverageMeter(),
+        }
+        # over multiple steps tracker
+        self.err_trackers = {
+            'Abs. Rel. Error': SeriesData(),
+            'Sq. Rel. Error': SeriesData(),
+            'Linear RMS Error': SeriesData(),
+            'Log RMS Error': SeriesData(),
+            "Sparse Pts. Abs Rel": SeriesData(),
+            "Direct Depth M Err": SeriesData(),
+            "Direct Depth P Err": SeriesData(),
+            "Direct Depth 0 Err": SeriesData(),
+            "Depth Boundary Err": SeriesData(),
+            "Normal Mean": SeriesData(),
+            "Normal Median": SeriesData(),
+            "Plane Flatness Err": SeriesData(),
+            "Plane Orientation Err": SeriesData(),
+        }
+
+        self.acc_trackers = {
+            "Inlier D1": SeriesData(),
+            "Inlier D2": SeriesData(),
+            "Inlier D3": SeriesData(),
+            "Depth Boundary Acc": SeriesData(),
+            "Normal Angle 11.25": SeriesData(),
+            "Normal Angle 22.5": SeriesData(),
+            "Normal Angle 30": SeriesData(),
+        }
 
         # Track the best inlier ratio recorded so far
         self.best_d1_inlier = 0.0
@@ -323,7 +400,11 @@ class MonoTrainer(object):
         self.loss_meters = {
             "total": AverageMeter()
         }
+        self.loss_trackers = {
+            "total": SeriesData()
+        }
         self.dry_run = False
+        self.save_to_disk = True
 
     def setDryRun(self, state):
         self.dry_run = state
@@ -365,6 +446,7 @@ class MonoTrainer(object):
             for key, val in raw_loss.items():
                 if key not in self.loss_meters:
                     self.loss_meters[key] = AverageMeter()
+                    self.loss_trackers[key] = SeriesData()
                 self.loss_meters[key].update(val.item())
 
     def train_one_epoch(self):
@@ -423,8 +505,13 @@ class MonoTrainer(object):
                 print(json.dumps(dict_loss, indent=4, sort_keys=True))
                 # Visualize the loss
                 total_batches = self.epoch * len(self.train_dataloader) + batch_num
-                visualize_loss(self.vis, batch_num, total_batches, self.loss_meters)
-                visualize_samples(self.vis, self.checkpoint_dir, data, output, histograms)
+
+                for key, loss_meter in self.loss_meters.items():
+                    self.loss_trackers[key].update(total_batches, loss_meter.avg, loss_meter.std)
+
+                visualize_loss(self.vis, self.loss_trackers, self.checkpoint_dir, False)
+                visualize_samples(self.vis, self.checkpoint_dir, data, output, histograms,
+                                  self.save_to_disk)
 
                 # Print the most recent batch report
                 self.print_batch_report(batch_num)
@@ -449,7 +536,8 @@ class MonoTrainer(object):
         # Load data
         s = time.time()
         with torch.no_grad():
-            for batch_num, raw_data in enumerate(self.val_dataloader):
+            for batch_num, raw_data in tqdm(enumerate(self.val_dataloader),
+                                            total=len(self.val_dataloader)):
 
                 # Parse the data
                 inputs, data = self.parse_data(raw_data)
@@ -484,12 +572,14 @@ class MonoTrainer(object):
         if checkpoint_path is not None:
             self.load_checkpoint(checkpoint_path, weights_only)
             # if weights_only:
-            self.initialize_visualizations()
-        else:
+            # self.initialize_visualizations()
+        # else:
             # Initialize any training visualizations
-            self.initialize_visualizations()
-        # make sure that validation is correct without bugs
-        # self.validate()
+            # self.initialize_visualizations()
+            # make sure that validation is correct without bugs
+
+        self.validate()
+        self.visualize_metrics()
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -515,14 +605,10 @@ class MonoTrainer(object):
         '''
         Resets metrics used to evaluate the model
         '''
-        self.abs_rel_error_meter.reset()
-        self.sq_rel_error_meter.reset()
-        self.lin_rms_sq_error_meter.reset()
-        self.log_rms_sq_error_meter.reset()
-        self.d1_inlier_meter.reset()
-        self.d2_inlier_meter.reset()
-        self.d3_inlier_meter.reset()
-        self.sparse_abs_rel_error_meter.reset()
+        for key, metric in self.err_meters.items():
+            metric.reset()
+        for key, metric in self.acc_meters.items():
+            metric.reset()
 
     def compute_eval_metrics(self, output, data):
         '''
@@ -533,11 +619,14 @@ class MonoTrainer(object):
         gt_depth = data.get(DataType.Depth, scale=1)[0]
         depth_mask = data.get(DataType.Depth, scale=1)[0]
         sparse_pts = data.get(DataType.SparseDepth, scale=1)
+        gt_normals = data.get(DataType.Normals, scale=1)
+        pred_normals = output.get(DataType.Normals, scale=1)
+        gt_planes = data.get(DataType.Planes)
         if len(sparse_pts) > 0:
             pts_present_mask = torch.sign(sparse_pts[0])
             depth_mask = depth_mask - depth_mask * pts_present_mask
 
-        N = depth_mask.sum()
+        N = depth_mask.sum().item()
 
         # Align the prediction scales via median
         median_scaling_factor = gt_depth[depth_mask > 0].median(
@@ -551,19 +640,53 @@ class MonoTrainer(object):
         d1 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=1)
         d2 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=2)
         d3 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=3)
+        dde_0, dde_m, dde_p = directed_depth_error(depth_pred, gt_depth, depth_mask, thr=3.0)
+        dbe_acc, dbe_com = depth_boundary_error(depth_pred, gt_depth, depth_mask)
+
+        # if len(gt_normals) > 0 and len(gt_planes) > 0:
+        #     pe_flat, orient_err = planarity_errors(depth_pred, gt_normals[0],
+        #                                            gt_planes[0], depth_mask)
+
+        if len(gt_normals) > 0 and len(pred_normals) > 0:
+            norm1 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+                                             depth_mask, degree=11.25)
+            norm2 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+                                             depth_mask, degree=22.5)
+            norm3 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+                                             depth_mask, degree=30)
+            norm_mean, norm_median = normal_stats(pred_normals[0], gt_normals[0], depth_mask)
+        # pe_flat, orient_err = planarity_errors(depth_pred, gt_normals, planes, mask)
         if len(sparse_pts) > 0:
             sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
 
-        self.abs_rel_error_meter.update(abs_rel, N)
-        self.sq_rel_error_meter.update(sq_rel, N)
-        self.lin_rms_sq_error_meter.update(rms_sq_lin, N)
-        self.log_rms_sq_error_meter.update(rms_sq_log, N)
-        self.d1_inlier_meter.update(d1, N)
-        self.d2_inlier_meter.update(d2, N)
-        self.d3_inlier_meter.update(d3, N)
+        self.err_meters["Abs. Rel. Error"].update(abs_rel, N)
+        self.err_meters["Sq. Rel. Error"].update(sq_rel, N)
+        self.err_meters["Linear RMS Error"].update(rms_sq_lin, N)
+        self.err_meters["Log RMS Error"].update(rms_sq_log, N)
+        self.err_meters["Direct Depth M Err"].update(dde_m)
+        self.err_meters["Direct Depth P Err"].update(dde_p)
+        self.err_meters["Direct Depth 0 Err"].update(dde_0)
+        self.err_meters["Depth Boundary Err"].update(dbe_com)
+
         if len(sparse_pts) > 0:
-            self.sparse_abs_rel_error_meter.update(sparse_abs_rel,
-                                                   pts_present_mask.sum())
+            self.err_meters["Sparse Pts. Abs Rel"].update(sparse_abs_rel.item(),
+                                                          pts_present_mask.sum().item())
+
+        self.acc_meters["Inlier D1"].update(d1, N)
+        self.acc_meters["Inlier D2"].update(d2, N)
+        self.acc_meters["Inlier D3"].update(d3, N)
+        self.acc_meters["Depth Boundary Acc"].update(dbe_acc)
+
+        if len(gt_normals) > 0 and len(pred_normals) > 0:
+            self.acc_meters["Normal Angle 11.25"].update(norm1)
+            self.acc_meters["Normal Angle 22.5"].update(norm2)
+            self.acc_meters["Normal Angle 30"].update(norm3)
+            self.err_meters["Normal Mean"].update(norm_mean)
+            self.err_meters["Normal Median"].update(norm_median)
+
+        # if len(gt_normals) > 0 and len(gt_planes) > 0:
+        #     self.err_meters["Plane Flatness Err"].update(pe_flat)
+        #     self.err_meters["Plane Orientation Err"].update(orient_err)
 
     def load_checkpoint(self, checkpoint_path=None, weights_only=False, eval_mode=False):
         '''
@@ -601,100 +724,43 @@ class MonoTrainer(object):
         else:
             print('WARNING: No checkpoint found')
 
-    def visualizeNetwork(self, checkpoint_path=None):
-        if checkpoint_path is not None:
-            self.load_checkpoint(
-                checkpoint_path, weights_only=True, eval_mode=False)
-        for batch_num, raw_data in enumerate(self.train_dataloader):
-            if batch_num > 1:
-                return
-            inputs, data = self.parse_data(raw_data)
-            inputs = toDevice(inputs, self.device)
-            data = data.to(self.device)
-
-            output = self.annotate_outputs(self.forward_pass(inputs))
-
-            raw_loss = self.compute_loss(output, data)
-            loss = self.sumLosses(raw_loss)
-
-            graph_dot = register_hooks(loss)
-            self.backward_pass(loss)
-
-            plot_grad_flow(self.network.named_parameters(),
-                           osp.join(self.checkpoint_dir, "gradient.png"))
-
-            dot = graph_dot()
-            # dot.format = 'svg'
-            # dot.render('graph.svg', self.checkpoint_dir)
-            dot.save('graph.dot', self.checkpoint_dir)
-
-    def initialize_visualizations(self):
-        '''
-        Initializes visualizations
-        '''
-        # if self.vis[1] == self.vis[0].get_env_list():
-        self.vis[0].delete_env(self.vis[1])
-        self.vis[0].line(
-            env=self.vis[1],
-            X=torch.zeros(1, 4).long(),
-            Y=torch.zeros(1, 4).float(),
-            win='error_metrics',
-            opts=dict(
-                title='Depth Error Metrics',
-                markers=True,
-                xlabel='Epoch',
-                ylabel='Error',
-                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error', 'Log RMS Error']))
-
-        self.vis[0].line(
-            env=self.vis[1],
-            X=torch.zeros(1, 3).long(),
-            Y=torch.zeros(1, 3).float(),
-            win='inlier_metrics',
-            opts=dict(
-                title='Depth Inlier Metrics',
-                markers=True,
-                xlabel='Epoch',
-                ylabel='Percent',
-                legend=['d1', 'd2', 'd3']))
-
     def visualize_metrics(self):
         '''
         Updates the metrics visualization
         '''
-        abs_rel = self.abs_rel_error_meter.avg
-        sq_rel = self.sq_rel_error_meter.avg
-        lin_rms = math.sqrt(self.lin_rms_sq_error_meter.avg)
-        log_rms = math.sqrt(self.log_rms_sq_error_meter.avg)
-        d1 = self.d1_inlier_meter.avg
-        d2 = self.d2_inlier_meter.avg
-        d3 = self.d3_inlier_meter.avg
-        sparse_abs_rel = self.sparse_abs_rel_error_meter.avg
+        epoch = self.epoch + 1
+        for key, meter in self.acc_meters.items():
+            self.acc_trackers[key].update(epoch, meter.avg, meter.std)
 
-        errors = torch.FloatTensor([abs_rel, sq_rel, lin_rms, log_rms, sparse_abs_rel])
-        errors = errors.view(1, -1)
-        epoch_expanded = torch.ones(errors.shape) * (self.epoch + 1)
-        self.vis[0].line(
-            env=self.vis[1],
-            X=epoch_expanded,
-            Y=errors,
-            win='error_metrics',
-            update='append',
-            opts=dict(
-                legend=['Abs. Rel. Error', 'Sq. Rel. Error', 'Linear RMS Error',
-                        'Log RMS Error', "Sparse Pts. Abs Rel"]))
+        for key, meter in self.err_meters.items():
+            self.err_trackers[key].update(epoch, meter.avg, meter.std)
 
-        inliers = torch.FloatTensor([d1, d2, d3])
-        inliers = inliers.view(1, -1)
-        epoch_expanded = torch.ones(inliers.shape) * (self.epoch + 1)
-        self.vis[0].line(
-            env=self.vis[1],
-            X=epoch_expanded,
-            Y=inliers,
-            win='inlier_metrics',
-            update='append',
-            opts=dict(
-                legend=['d1', 'd2', 'd3']))
+        res_folder = osp.join(self.checkpoint_dir, "visdom")
+        traces = []
+        for key, tracker in self.err_trackers.items():
+            traces.append((key, tracker.x, tracker.y, tracker.std))
+        graph = linePlot(traces)
+        py.io.write_json(graph, osp.join(res_folder, "errors.json"))
+        # with open(osp.join(res_folder, "errors.json"), mode="w") as f:
+        #     f.write(json.dumps(graph))
+
+        if self.save_to_disk:
+            py.io.write_image(graph, osp.join(res_folder, "errors.png"))
+        if self.vis is not None:
+            self.vis[0].plotlyplot(graph, win="error_metrics", env=self.vis[1])
+
+        traces = []
+        for key, tracker in self.acc_trackers.items():
+            traces.append((key, tracker.x, tracker.y, tracker.std))
+        graph = linePlot(traces)
+        py.io.write_json(graph, osp.join(res_folder, "acc.json"))
+        # with open(osp.join(res_folder, "acc.json"), mode="w") as f:
+        #     f.write(json.dumps(graph))
+
+        if self.save_to_disk:
+            py.io.write_image(graph, osp.join(res_folder, "acc.png"))
+        if self.vis is not None:
+            self.vis[0].plotlyplot(graph, win="inlier_metrics", env=self.vis[1])
 
     def print_batch_report(self, batch_num):
         '''
@@ -721,25 +787,15 @@ class MonoTrainer(object):
         '''
         Prints a report of the validation results
         '''
-        report = ('Epoch: {}\n'
-                  '  Avg. Abs. Rel. Error: {:.4f}\n'
-                  '  Avg. Sq. Rel. Error: {:.4f}\n'
-                  '  Avg. Lin. RMS Error: {:.4f}\n'
-                  '  Avg. Log RMS Error: {:.4f}\n'
-                  '  Inlier D1: {:.4f}\n'
-                  '  Inlier D2: {:.4f}\n'
-                  '  Inlier D3: {:.4f}\n'
-                  '  Sparse pts Avg .Abs. Rel. Error: {:.4f}\n\n'.format(
-                      self.epoch + 1,
-                      self.abs_rel_error_meter.avg,
-                      self.sq_rel_error_meter.avg,
-                      math.sqrt(self.lin_rms_sq_error_meter.avg),
-                      math.sqrt(self.log_rms_sq_error_meter.avg),
-                      self.d1_inlier_meter.avg,
-                      self.d2_inlier_meter.avg,
-                      self.d3_inlier_meter.avg,
-                      self.sparse_abs_rel_error_meter.avg))
+        lines = []
+        lines.append("Epoch: {}\n".format(self.epoch + 1))
+        for key, meter in self.err_meters.items():
+            lines.append("{}: {:.4f} ({:.4f})\n".format(key, meter.avg, meter.std))
 
+        for key, meter in self.acc_meters.items():
+            lines.append("{}: {:.4f} ({:.4f})\n".format(key, meter.avg, meter.std))
+
+        report = ''.join(lines)
         print(report)
         return report
 
@@ -787,7 +843,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
 
     data_folder = osp.join(directory, "visdom")
     os.makedirs(data_folder, exist_ok=True)
-    visdom[0].save([visdom[1]])
+    # visdom[0].save([visdom[1]])
     rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
     depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
     pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
@@ -806,42 +862,60 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
             max_val = 8.0
         # print(key)
         graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
+        file = osp.join(data_folder, key + '_hist.json')
+        py.io.write_json(graph, file)
+        # with open(file, mode="w") as f:
+        #     f.write(json.dumps(graph))
+
         if save_to_disk:
             py.io.write_image(graph, osp.join(data_folder, key + '_hist.png'))
-        visdom[0].plotlyplot(graph, win=key, env=visdom[1])
+        if visdom is not None:
+            visdom[0].plotlyplot(graph, win=key, env=visdom[1])
 
     for i, (scale, guidance) in enumerate(output.queryType(DataType.Guidance)):
-
         key = "guidance_" + str(i)
         graph = imageHeatmap(rgb, guidance[0].cpu().squeeze().flip(0), title=key, max_val=None)
+        file = osp.join(data_folder, key + '.json')
+        # with open(file, mode="w") as f:
+        #     f.write(json.dumps(graph))
+        py.io.write_json(graph, file)
+
         if save_to_disk:
             py.io.write_image(graph, osp.join(data_folder, key + '.png'))
-        visdom[0].plotlyplot(graph, win=key, env=visdom[1])
+        if visdom is not None:
+            visdom[0].plotlyplot(graph, win=key, env=visdom[1])
 
-    visdom[0].image(
-        visualize_rgb(rgb),
-        env=visdom[1],
-        win='rgb',
-        opts=dict(
-            title='Input RGB Image',
-            caption='Input RGB Image'))
+    if visdom is not None:
+        visdom[0].image(
+            visualize_rgb(rgb),
+            env=visdom[1],
+            win='rgb',
+            opts=dict(
+                title='Input RGB Image',
+                caption='Input RGB Image'))
 
-    visdom[0].image(
-        visualize_mask(depth_mask),
-        env=visdom[1],
-        win='mask',
-        opts=dict(
-            title='Mask',
-            caption='Mask'))
+        visdom[0].image(
+            visualize_mask(depth_mask),
+            env=visdom[1],
+            win='mask',
+            opts=dict(
+                title='Mask',
+                caption='Mask'))
 
     depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
+    file = osp.join(data_folder, 'depths.json')
+    py.io.write_json(depth_fig, file)
+    # with open(file, mode="w") as f:
+    #     f.write(json.dumps(depth_fig))
+
     if save_to_disk:
         py.io.write_image(depth_fig, osp.join(data_folder, 'depths.png'))
+    if visdom is not None:
+        visdom[0].plotlyplot(depth_fig, win="depths", env=visdom[1])
 
-    visdom[0].plotlyplot(depth_fig, win="depths", env=visdom[1])
     pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
     gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
-    if len(pred_seg) > 0 and len(gt_seg) > 0:
+    if visdom is not None and len(pred_seg) > 0 and len(gt_seg) > 0:
         pred_seg = torch.sigmoid(pred_seg[0][0]).cpu()
         gt_seg = gt_seg[0][0].cpu()
         visdom[0].heatmap(
@@ -875,7 +949,8 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
         normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
         if save_to_disk:
             py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
-        visdom[0].plotlyplot(normals_fig, win="normals", env=visdom[1])
+        if visdom is not None:
+            visdom[0].plotlyplot(normals_fig, win="normals", env=visdom[1])
 
     pred_depth_normals = output.get(DataType.DepthNormals, scale=1)
     gt_depth2 = data.get(DataType.Depth, scale=1)
@@ -890,11 +965,12 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
                                   ["Gt depth normals", "Pred depth normals"])
         if save_to_disk:
             py.io.write_image(normals_fig, osp.join(data_folder, 'depth_normals.png'))
-        visdom[0].plotlyplot(normals_fig, win="depth_normals", env=visdom[1])
+        if visdom is not None:
+            visdom[0].plotlyplot(normals_fig, win="depth_normals", env=visdom[1])
 
     pred_plane_param = output.get(DataType.PlaneParams, scale=1)
     gt_plane_param = data.get(DataType.PlaneParams, scale=1)
-    if len(pred_plane_param) > 0 and len(gt_normals) > 0:
+    if visdom is not None and len(pred_plane_param) > 0 and len(gt_normals) > 0:
         gt_plane_param = toPlaneParams(gt_normals[0], data.get(DataType.Depth, scale=1)[0])
         pred_plane_param = pred_plane_param[0][0].cpu()
         gt_plane_param = gt_plane_param[0].cpu()
@@ -918,7 +994,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
                 height=768))
 
     planes = data.get(DataType.Planes)
-    if len(planes) > 0:
+    if visdom is not None and len(planes) > 0:
         planes_data = planes[0][0].cpu()
         planes_data = visualizePlanes(planes_data).squeeze().flip(0)
         print(planes_data.size())
@@ -954,29 +1030,21 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
 
 
 @pytorchDetachedProcess
-def visualize_loss(visdom, batch_num, total_batches, loss_meters):
+def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
     '''
     Updates the loss visualization
     '''
-    for key, loss_meter in loss_meters.items():
-        if not visdom[0].win_exists(key, env=visdom[1]):
-            visdom[0].line(
-                env=visdom[1],
-                X=torch.zeros(1, 1).long(),
-                Y=torch.zeros(1, 1).float(),
-                win=key,
-                opts=dict(
-                    title=key + ' Plot',
-                    markers=False,
-                    xlabel='Iteration',
-                    ylabel='Loss',
-                    legend=[key]))
-        else:
-            visdom[0].line(
-                env=visdom[1],
-                X=torch.tensor([total_batches]),
-                Y=torch.tensor([loss_meter.avg]),
-                win=key,
-                update='append',
-                opts=dict(
-                    legend=[key]))
+    data_folder = osp.join(directory, "visdom")
+    os.makedirs(data_folder, exist_ok=True)
+
+    for key, tracker in loss_trackers.items():
+        graph = linePlot([(key, tracker.x, tracker.y, None)])
+        file = osp.join(data_folder, key + '.json')
+        py.io.write_json(graph, file)
+        # with open(file, mode="w") as f:
+        #     f.write(json.dumps(graph))
+
+        if save_to_disk:
+            py.io.write_image(graph, osp.join(data_folder, key + '.png'))
+        if visdom is not None:
+            visdom[0].plotlyplot(graph, win=key, env=visdom[1])

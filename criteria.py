@@ -193,6 +193,8 @@ def huberLoss(pred, target, mask):
     treshold_mask = (abs_val <= treshold).float()
     below_tresh = abs_val * treshold_mask
     above_tresh = (1 - treshold_mask) * ((x**2 + treshold**2) / (2 * treshold))
+    assert (above_tresh > 0).all()
+    assert (below_tresh > 0).all()
     return below_tresh + above_tresh
 
 # https://github.com/kmaninis/OSVOS-PyTorch
@@ -297,6 +299,8 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     #  L1 loss on depth distances
     loss_depth = torch.log(l1Loss(pred, gt) + 1)
     histograms["revis_l1_dist"] = loss_depth.detach()
+    # loss_depth = huberLoss(pred, gt, mask)
+    # histograms["revis_huber_dist"] = loss_depth.detach()
     loss_depth = validMean(loss_depth)
 
     validMean = createValidMean(mask, adaptive=adaptive)
@@ -311,6 +315,7 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     # print(loss_depth, loss_normal, loss_dx, loss_dy)
     losses = {
         "revis_l1_dist": loss_depth,
+        # "revis_huber_dist": loss_depth,
         "revis_dxdy": loss_normal,
         "revis_normal_similarity": loss_dx + loss_dy
     }

@@ -426,29 +426,33 @@ def pytorchDetachedProcess(func):
     return funcWrapper
 
 
-def PCA(data, k=2):
-    """Calculates PCA on data
+def linePlot(traces):
+    """Plot multiple traces into one graph
 
     Parameters
     ----------
-    data : Tensor BxCxN
-        PCA will be caluclated over C and N dimention
-    k : int, optional
-        number of dimentions to keep after PCA , by default 2
+    traces : list of tuples (name, x, y, error)
+        each element of list should be one graph trace
 
     Returns
     -------
-    [type]
-        [description]
+    JSON Plotly graph
     """
-    # preprocess the data
-    results = []
-    for batch_id in range(data.size(0)):
-        X = data[batch_id, :, :]
-        X_mean = torch.mean(X, dim=0, keepdim=True)
-        X = X - X_mean
-        # svd
-        U, S, V = torch.svd(torch.t(X))
-        results.append(torch.mm(X, U[:, :k]))
-
-    return torch.stack(results, dim=0)
+    data = []
+    for name, x, y, error in traces:
+        ops = {
+            "name": name,
+            "x": x,
+            "y": y
+        }
+        if error is not None:
+            ops["error_y"] = dict(
+                type='data',
+                array=error,
+                visible=True
+            )
+        data.append(go.Scatter(**ops))
+    layout = dict(
+        title=name,
+    )
+    return {'data': data, 'layout': layout}
