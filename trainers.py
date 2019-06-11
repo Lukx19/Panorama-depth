@@ -507,6 +507,8 @@ class MonoTrainer(object):
                 total_batches = self.epoch * len(self.train_dataloader) + batch_num
 
                 for key, loss_meter in self.loss_meters.items():
+                    if key not in self.loss_trackers:
+                        self.loss_trackers[key] = SeriesData()
                     self.loss_trackers[key].update(total_batches, loss_meter.avg, loss_meter.std)
 
                 visualize_loss(self.vis, self.loss_trackers, self.checkpoint_dir, False)
@@ -578,8 +580,8 @@ class MonoTrainer(object):
             # self.initialize_visualizations()
             # make sure that validation is correct without bugs
 
-        self.validate()
-        self.visualize_metrics()
+        # self.validate()
+        # self.visualize_metrics()
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -595,8 +597,8 @@ class MonoTrainer(object):
                 is_best = False
                 self.validate()
                 # Also update the best state tracker
-                if self.best_d1_inlier < self.d1_inlier_meter.avg:
-                    self.best_d1_inlier = self.d1_inlier_meter.avg
+                if self.best_d1_inlier < self.acc_meters["Inlier D1"].avg:
+                    self.best_d1_inlier = self.acc_meters["Inlier D1"].avg
                     is_best = True
                 self.save_checkpoint(is_best)
                 self.visualize_metrics()
