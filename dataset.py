@@ -10,7 +10,7 @@ import torchvision.transforms as transforms
 import numpy as np
 from PIL import Image, ImageOps
 import os.path as osp
-from util import read_tiff
+from util import read_tiff, onehottify
 from annotated_data import DataType
 from glob import glob
 
@@ -233,9 +233,8 @@ class OmniDepthDataset(torch.utils.data.Dataset):
     def readPlanarSegmentation(self, path):
         if osp.exists(path):
             planes = read_tiff(path)
-            is_planar = 1 - planes[:, :, 0]
-
-            return np.reshape(is_planar, (*is_planar.shape, 1))
+            is_planar = np.sign(planes)
+            return np.float32(is_planar)
         else:
             raise ValueError("File missing", path)
 
@@ -243,7 +242,9 @@ class OmniDepthDataset(torch.utils.data.Dataset):
         if osp.exists(path):
             max_planes = 30
             # first plane are non planar pixels
-            planes = read_tiff(path)[:, :, 1:]
+            planes = read_tiff(path)
+            planes = onehottify(planes)
+            planes = planes[:, :, 1:]
             if len(planes.shape) == 2:
                 print(path)
                 h, w = planes.shape
@@ -253,7 +254,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
             perm = np.argsort(np.sum(planes, axis=(0, 1)))
             perm = np.flip(perm)
             planes = planes[:, :, perm]
-            # use only dominant 15 planes for now. We can increase it later
+            # use only dominant max_planes planes for now. We can increase it later
             if ch < max_planes:
                 # print(planes.shape, path)
                 if ch == 1:
@@ -262,7 +263,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
             planes2 = planes[:, :, 0:max_planes]
             # print(np.sum(planes2, axis=(0, 1)), planes2.shape)
 
-            return planes2
+            return np.float32(planes2)
         else:
             raise ValueError("File missing", path)
 

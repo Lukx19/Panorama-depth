@@ -36,7 +36,7 @@ class TestColapsePlanes(unittest.TestCase):
                           [0, 0, 1, 0, 0]],
                          [[0, 0, 0, 1, 0],
                           [0, 0, 0, 0, 1]]])
-        res = cp.labelPlanarInstances(mask, sort=False)
+        res = cp.labelPlanarInstances(mask)
         res = res.tolist()
         self.assertListEqual(res, [[[0], [1]], [[2], [2]], [[3], [4]]])
 

@@ -456,3 +456,18 @@ def linePlot(traces):
         title=name,
     )
     return {'data': data, 'layout': layout}
+
+
+def onehottify(x, n=None):
+    """1-hot encode x with the max value n (computed from data if n is None)."""
+    mat = np.copy(np.asarray(x))
+    dtype = mat.dtype
+    shape = mat.shape
+    if len(shape) > 1:
+        mat = np.reshape(mat, (-1, 1))
+    n = int(np.max(x) + 1) if n is None else n
+    onehot = np.eye(n, dtype=dtype)[mat.astype(int)]
+    if len(shape) > 1:
+        onehot = np.reshape(onehot, (*shape, n))
+        onehot = np.squeeze(onehot)
+    return onehot
