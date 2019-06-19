@@ -2,7 +2,6 @@ import torch
 import torch.nn.functional as F
 import time
 from tqdm import tqdm
-import math
 import shutil
 import os.path as osp
 import os
@@ -851,6 +850,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     os.makedirs(data_folder, exist_ok=True)
     # visdom[0].save([visdom[1]])
     rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
+
     depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
     pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
     pred_depth *= depth_mask
@@ -916,7 +916,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pred_seg = output.get(DataType.PlanarSegmentation, scale=1)
     gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
     if visdom is not None and len(pred_seg) > 0 and len(gt_seg) > 0:
-        pred_seg = torch.sigmoid(pred_seg[0][0]).cpu()
+        pred_seg = pred_seg[0][0].cpu()
         gt_seg = gt_seg[0][0].cpu()
         visdom[0].heatmap(
             gt_seg.squeeze().flip(0),
@@ -1007,7 +1007,10 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
                 caption='Planes GT'))
 
     rgb = data.get(DataType.Image, scale=1)[0][0, :, :, :].cpu().detach()
+    rgb2x = F.avg_pool2d(rgb, kernel_size=3, stride=2, padding=1)
     rgb = rgb.permute(1, 2, 0).numpy() * 250
+    rgb2x = rgb2x.permute(1, 2, 0).numpy() * 250
+
     pred_normals = output.get(DataType.Normals, scale=1)
     if len(pred_normals) > 0:
         pred_normals = pred_normals[0][0].cpu().detach()
@@ -1035,6 +1038,21 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
         pts = np.reshape(pts, (-1, 3))
         savePcl(pts, color, osp.join(data_folder, 'points3d_' + str(i) + '.ply'),
                 normals=normals)
+
+    pred_normals2x = output.get(DataType.Normals, scale=2)
+    if len(pred_normals2x) > 0:
+        pred_normals2x = pred_normals2x[0][0].cpu().detach()
+        pred_normals2x = torch.squeeze(pred_normals2x.permute(1, 2, 0)).numpy()
+        normals2x = np.reshape(pred_normals, (-1, 3))
+    else:
+        normals2x = None
+
+    color2x = np.reshape(rgb2x, (-1, 3))
+    for i, pts in enumerate(output.get(DataType.Points3d, scale=2)):
+        pts = pts[0].cpu().permute(1, 2, 0).numpy()
+        pts = np.reshape(pts, (-1, 3))
+        savePcl(pts, color2x, osp.join(data_folder, 'points3d_2x_' + str(i) + '.ply'),
+                normals=normals2x)
 
 
 @pytorchDetachedProcess

@@ -411,33 +411,29 @@ class RectNet(nn.Module):
                 raise ValueError("Unknown type of normal prediction module")
 
         if self.normal_smoothing:
-            # self.smoothing_l = nn.ModuleList([NormalsConv(self.height, self.width,
-            #                                               padding=i, kernel_size=3, dilation=i)
-            #                                   for i in [8, 8, 8]])
-            # self.smoothing = NormalsConv(self.height, self.width,
-            #                              padding=2, kernel_size=3, dilation=2)
-            self.planar_cov = PlanarConv(self.height, self.width, 9)
-            self.to3d = Depth2Points(self.height, self.width)
-            self.d2pt = Points2Depths(self.height, self.width)
-            self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=9, padding=20, dilation=5),
-                                              #   SmoothConv(kernel_size=9, padding=20, dilation=5),
-                                              #   SmoothConv(kernel_size=9, padding=20, dilation=5)
-                                              #   SmoothConv(kernel_size=9, padding=4, dilation=1),
-                                              #   SmoothConv(kernel_size=15, padding=7, dilation=1)
-                                              ])
-            # self.prediction_planar = nn.Conv2d(
-            #     64, 8, 3, padding=1)
-            # # self.prediction_planar2 = ConvELUBlock(
-            # # 10, 1, 1, padding=0, reflection_pad=reflection_pad)
-            # self.prediction_planar2 = nn.Conv2d(10, 1, 3, padding=1)
-            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
 
-        if self.calc_segmentation:
+            self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
+                                                reflection_pad=reflection_pad)
+            self.decoder1_seg = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
+                                             reflection_pad=reflection_pad)
+            self.decoder2_seg = nn.Conv2d(64, 1, 1)
+            #  need to get half spatial size of normals
+            self.avg_pool_normal = nn.AvgPool2d(3, stride=2, padding=1)
+            self.avg_pool_seg = nn.AvgPool2d(3, stride=2, padding=1)
+
+            with torch.no_grad():
+                self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
+                self.d2pt_2x = Points2Depths(self.height // 2, self.width // 2)
+                self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=9, padding=20,
+                                                             dilation=5, iterations=2),
+                                                  ])
+
+        if self.calc_segmentation and not self.normal_smoothing:
             self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
             self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
             self.seg_cov3 = nn.Conv2d(32, 1, 1)
 
-        if self.calc_planes:
+        if self.calc_planes and not self.normal_smoothing:
             self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
             self.fusion_d = FilterBlock(in_channels=1)
             self.fusion_g = FilterBlock(in_channels=1)
@@ -449,6 +445,7 @@ class RectNet(nn.Module):
         self.apply(xavier_init)
 
     def forward(self, inputs):
+        outputs = {}
         x = inputs[DataType.Image]
         if DataType.SparseDepth in inputs:
             sparse_depth = inputs[DataType.SparseDepth][1]
@@ -516,6 +513,54 @@ class RectNet(nn.Module):
         # print(decoder1_0_out.size())
         # print('***********')
         decoder1_1_out = self.decoder1_1(decoder1_0_out)
+
+        if self.normal_smoothing:
+            #  1. calculate normals with decoder from in 1x resolution
+            normals_input = self.decoder1_normal(decoder1_0_out)
+            if self.normals_type == "sphere":
+                res = self.normals(normals_input)
+                pred_normals = res["normals"]
+                pred_normals_embed = res["normals_embedding"]
+                outputs["normals_classes"] = res["normals_classes"]
+            else:
+                res = self.normals(normals_input)
+                pred_normals = res
+                pred_normals_embed = res
+
+            outputs["normals_emb"] = pred_normals_embed
+            outputs["normals"] = pred_normals
+            # 1.1 calculate 1x segmentation
+            seg_out = self.decoder1_seg(decoder1_0_out)
+            pred_seg = self.decoder2_seg(seg_out)
+            pred_seg = torch.sigmoid(pred_seg)
+            outputs["segmentation"] = pred_seg
+            # 2. downsample to 1/2 resolution -> reduce noise
+            normals_2x = self.avg_pool_normal(pred_normals).detach()
+            seg_2x = self.avg_pool_seg(pred_seg).detach()
+            # 3. smooth depth based on normals
+            outputs["pcl"] = []
+            outputs["pcl2x"] = []
+            with torch.no_grad():
+                seg_2x[:, :, 0:20, :] = 0
+                seg_2x[:, :, -20:, :] = 0
+                hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
+                                       torch.zeros_like(seg_2x))
+                points_2x = self.to3d_2x(pred_2x.detach())
+                outputs["pcl2x"].append(points_2x)
+                smooth_pts = points_2x * hard_seg
+                smooth_normals = hard_seg * normals_2x
+                for module in self.smoothing_l:
+                    smooth_pts = module(smooth_pts, smooth_normals, None)
+                    # smooth_pts = smooth_pts * hard_seg
+                    # smooth_normals = hard_seg * smooth_normals
+                    outputs["pcl2x"].append(smooth_pts)
+
+                # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+                smooth_depth_2x = self.d2pt_2x(pred_2x.detach(), smooth_pts, normals_2x)
+                outputs["pcl2x"].append(self.to3d_2x(smooth_depth_2x.clone().detach()))
+                smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
+                upsampled_pred_2x = F.interpolate(smooth_depth_2x.detach(), scale_factor=2)
+
         decoder1_2_out = self.decoder1_2(
             torch.cat((upsampled_pred_2x, decoder1_1_out), 1))
 
@@ -529,12 +574,13 @@ class RectNet(nn.Module):
         else:
             opt_depth = pred_1x
 
-        outputs = {}
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
         # outputs["depth_normals"] = self.depth_normals(opt_depth)
-        if self.calc_normals:
-            if self.normals_type == 'deep':
+        if self.calc_normals and not self.normal_smoothing:
+            if self.normal_smoothing:
+                normals_input = self.decoder1_normal(decoder1_0_out)
+            elif self.normals_type == 'deep':
                 normals_input = encoder2_2_out
             else:
                 normals_input = decoder1_2_out
@@ -550,56 +596,49 @@ class RectNet(nn.Module):
                 pred_normals_embed = res
 
             outputs["normals_emb"] = pred_normals_embed
-            # planes = inputs[DataType.Planes]
-            # b, p, h, w = planes.size()
-            # pred_normals_r = torch.reshape(pred_normals, (b, 1, 3, -1))
-            # planes_r = torch.reshape(planes, (b, p, 1, -1))
-            # avg_normals = torch.sum(planeAwarePooling(pred_normals_r, planes_r, keepdim=True), dim=1)
-            # outputs["normals"] = torch.reshape(avg_normals,(b,3,h,w))
             outputs["normals"] = pred_normals
-            # print(pred_normals.size())
 
-        if self.calc_segmentation:
+        if self.calc_segmentation and not self.normal_smoothing:
             seg1 = self.seg_cov1(decoder1_2_out)
             seg2 = self.seg_cov2(decoder1_2_out)
             seg_cat = torch.cat((seg1, seg2), 1)
             pred_seg = self.seg_cov3(seg_cat)
             outputs["segmentation"] = pred_seg
 
-        if self.normal_smoothing:
-            smooth_depth = opt_depth
-            normals = outputs["normals"].clone().detach()
-            seg = outputs["segmentation"]
-            # planes = inputs[DataType.Planes]
-            # seg = torch.ones_like(seg)
-            # print(planes.size())
-            # seg = torch.sign(torch.sum(planes[:, :, :, :], dim=1, keepdim=True))
-            seg[:, :, 0:20, :] = 0
-            seg[:, :, -20:, :] = 0
-            # print(seg.size())
-            # for layer in self.smoothing_l:
-            #     smooth_depth = layer(smooth_depth, normals)
-            hard_seg = torch.where(seg > 0.5, torch.ones_like(seg), torch.zeros_like(seg))
-            # smooth_depth = hard_seg * smooth_depth
-            # normals = hard_seg * normals
-            # smooth_depth = self.planar_cov(smooth_depth, normals)
+        # if self.normal_smoothing:
+        #     smooth_depth = opt_depth
+        #     normals = outputs["normals"].clone().detach()
+        #     seg = outputs["segmentation"]
+        #     # planes = inputs[DataType.Planes]
+        #     # seg = torch.ones_like(seg)
+        #     # print(planes.size())
+        #     # seg = torch.sign(torch.sum(planes[:, :, :, :], dim=1, keepdim=True))
+        #     seg[:, :, 0:20, :] = 0
+        #     seg[:, :, -20:, :] = 0
+        #     # print(seg.size())
+        #     # for layer in self.smoothing_l:
+        #     #     smooth_depth = layer(smooth_depth, normals)
+        #     hard_seg = torch.where(seg > 0.5, torch.ones_like(seg), torch.zeros_like(seg))
+        #     # smooth_depth = hard_seg * smooth_depth
+        #     # normals = hard_seg * normals
+        #     # smooth_depth = self.planar_cov(smooth_depth, normals)
 
-            points = self.to3d(smooth_depth)
-            #  ---------------------------------------------
-            outputs["pcl"] = []
-            smooth_pts = points
-            smooth_pts = smooth_pts * hard_seg
-            smooth_normals = hard_seg * normals.clone()
-            for module in self.smoothing_l:
-                smooth_pts = module(smooth_pts, smooth_normals, None)
-                smooth_pts = smooth_pts * hard_seg
-                smooth_normals = hard_seg * smooth_normals
-                outputs["pcl"].append(smooth_pts)
+        #     points = self.to3d(smooth_depth)
+        #     #  ---------------------------------------------
+        #     outputs["pcl"] = []
+        #     smooth_pts = points
+        #     smooth_pts = smooth_pts * hard_seg
+        #     smooth_normals = hard_seg * normals.clone()
+        #     for module in self.smoothing_l:
+        #         smooth_pts = module(smooth_pts, smooth_normals, None)
+        #         smooth_pts = smooth_pts * hard_seg
+        #         smooth_normals = hard_seg * smooth_normals
+        #         outputs["pcl"].append(smooth_pts)
 
-            # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
-            smooth_depth = self.d2pt(smooth_depth, smooth_pts, normals)
-            outputs["pcl"].append(self.to3d(smooth_depth.clone()))
-            outputs["depth_ref"] = hard_seg * smooth_depth + opt_depth * (1 - hard_seg)
+        #     # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+        #     smooth_depth = self.d2pt(smooth_depth, smooth_pts, normals)
+        #     outputs["pcl"].append(self.to3d(smooth_depth.clone()))
+        #     outputs["depth_ref"] = hard_seg * smooth_depth + opt_depth * (1 - hard_seg)
         #     -------------------------------------------
             # points = points * hard_seg
             # n_planes = planes.size(1) // 3
@@ -666,6 +705,9 @@ class RectNet(nn.Module):
         if "normals" in outputs:
             data.add(outputs["normals"], DataType.Normals)
 
+        if "normals2x" in outputs:
+            data.add(outputs["normals2x"], DataType.Normals, scale=2)
+
         if "normals_classes" in outputs:
             data.add(outputs["normals_classes"], DataType.NormalsClass)
 
@@ -699,6 +741,10 @@ class RectNet(nn.Module):
         if "pcl" in outputs:
             for pcl in outputs["pcl"]:
                 data.add(pcl.detach(), DataType.Points3d)
+
+        if "pcl2x" in outputs:
+            for pcl in outputs["pcl2x"]:
+                data.add(pcl.detach(), DataType.Points3d, scale=2)
 
         return data
 
