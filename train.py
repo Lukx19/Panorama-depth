@@ -32,9 +32,12 @@ model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer =
 network, criterion, device = setupGPUDevices(
     gpus_list=args.gpu_ids, model=model, criterion=criterion)
 
-vis = visdom.Visdom()
-env = experiment_name
-
+if args.disable_visdom:
+    visdom_setup = None
+else:
+    vis = visdom.Visdom()
+    env = experiment_name
+    visdom_setup = [vis, env]
 
 train_dataloader = torch.utils.data.DataLoader(
     dataset=dataset.OmniDepthDataset(
@@ -89,7 +92,7 @@ trainer = MonoTrainer(
     device,
     parse_fce=parser,
     sum_losses_fce=loss_sum_fce,
-    visdom=[vis, env],
+    visdom=visdom_setup,
     scheduler=scheduler,
     num_epochs=args.epochs,
     validation_freq=validation_freq,

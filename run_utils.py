@@ -205,6 +205,8 @@ def parseArgs(test=False, predict=False):
         parser.add_argument('--epochs', default=10, type=int)
         parser.add_argument('--lr', default=2e-4,
                             type=float, help='Learning rate')
+        parser.add_argument('--disable_visdom', action="store_true", default=False,
+                            help='Disable use of visdom server in training')
 
     return parser.parse_args()
 
