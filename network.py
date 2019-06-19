@@ -10,6 +10,7 @@ import torch.nn.functional as F
 from util import xavier_init
 from annotated_data import AnnotatedData, DataType
 import numpy as np
+from modules import SmoothConv, PlanarConv, Depth2Points, Points2Depths
 # from mean_shift import Bin_Mean_Shift
 
 # @inproceedings{cheng2018depth,
@@ -410,16 +411,25 @@ class RectNet(nn.Module):
                 raise ValueError("Unknown type of normal prediction module")
 
         if self.normal_smoothing:
-            self.smoothing_l = nn.ModuleList([NormalsConv(self.height, self.width,
-                                                          padding=i, kernel_size=3, dilation=i)
-                                              for i in [8, 8, 8]])
+            # self.smoothing_l = nn.ModuleList([NormalsConv(self.height, self.width,
+            #                                               padding=i, kernel_size=3, dilation=i)
+            #                                   for i in [8, 8, 8]])
             # self.smoothing = NormalsConv(self.height, self.width,
             #                              padding=2, kernel_size=3, dilation=2)
-            self.prediction_planar = nn.Conv2d(
-                64, 8, 3, padding=1)
-            # self.prediction_planar2 = ConvELUBlock(
-            # 10, 1, 1, padding=0, reflection_pad=reflection_pad)
-            self.prediction_planar2 = nn.Conv2d(10, 1, 3, padding=1)
+            self.planar_cov = PlanarConv(self.height, self.width, 9)
+            self.to3d = Depth2Points(self.height, self.width)
+            self.d2pt = Points2Depths(self.height, self.width)
+            self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=9, padding=20, dilation=5),
+                                              #   SmoothConv(kernel_size=9, padding=20, dilation=5),
+                                              #   SmoothConv(kernel_size=9, padding=20, dilation=5)
+                                              #   SmoothConv(kernel_size=9, padding=4, dilation=1),
+                                              #   SmoothConv(kernel_size=15, padding=7, dilation=1)
+                                              ])
+            # self.prediction_planar = nn.Conv2d(
+            #     64, 8, 3, padding=1)
+            # # self.prediction_planar2 = ConvELUBlock(
+            # # 10, 1, 1, padding=0, reflection_pad=reflection_pad)
+            # self.prediction_planar2 = nn.Conv2d(10, 1, 3, padding=1)
             self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
 
         if self.calc_segmentation:
@@ -429,6 +439,8 @@ class RectNet(nn.Module):
 
         if self.calc_planes:
             self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+            self.fusion_d = FilterBlock(in_channels=1)
+            self.fusion_g = FilterBlock(in_channels=1)
             self.fusion = FilterBlock(in_channels=2)
             # self.prediction_planar = nn.Conv2d(66, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
@@ -555,39 +567,97 @@ class RectNet(nn.Module):
             outputs["segmentation"] = pred_seg
 
         if self.normal_smoothing:
-            smooth_depth = opt_depth.clone().detach()
+            smooth_depth = opt_depth
             normals = outputs["normals"].clone().detach()
-            seg = outputs["segmentation"].clone().detach()
-            for layer in self.smoothing_l:
-                smooth_depth = layer(smooth_depth, normals)
+            seg = outputs["segmentation"]
+            # planes = inputs[DataType.Planes]
+            # seg = torch.ones_like(seg)
+            # print(planes.size())
+            # seg = torch.sign(torch.sum(planes[:, :, :, :], dim=1, keepdim=True))
+            seg[:, :, 0:20, :] = 0
+            seg[:, :, -20:, :] = 0
+            # print(seg.size())
+            # for layer in self.smoothing_l:
+            #     smooth_depth = layer(smooth_depth, normals)
+            hard_seg = torch.where(seg > 0.5, torch.ones_like(seg), torch.zeros_like(seg))
+            # smooth_depth = hard_seg * smooth_depth
+            # normals = hard_seg * normals
+            # smooth_depth = self.planar_cov(smooth_depth, normals)
 
-            planes = inputs[DataType.Planes]
-            planar_depth = self.planar_to_depth(opt_depth.clone().detach(), planes,
-                                                pred_seg.clone().detach(),
-                                                pred_normals.clone().detach())
-            outputs["depth1x_planar"] = planar_depth
-            outputs["depth1x_smooth"] = smooth_depth
-            depth_map = self.prediction_planar(decoder1_2_out)
-            feat_planar = torch.cat((planar_depth, seg, depth_map), dim=1)
-            refined_depth = self.prediction_planar2(feat_planar)
-            outputs["depth_ref"] = refined_depth
+            points = self.to3d(smooth_depth)
+            #  ---------------------------------------------
+            outputs["pcl"] = []
+            smooth_pts = points
+            smooth_pts = smooth_pts * hard_seg
+            smooth_normals = hard_seg * normals.clone()
+            for module in self.smoothing_l:
+                smooth_pts = module(smooth_pts, smooth_normals, None)
+                smooth_pts = smooth_pts * hard_seg
+                smooth_normals = hard_seg * smooth_normals
+                outputs["pcl"].append(smooth_pts)
+
+            # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+            smooth_depth = self.d2pt(smooth_depth, smooth_pts, normals)
+            outputs["pcl"].append(self.to3d(smooth_depth.clone()))
+            outputs["depth_ref"] = hard_seg * smooth_depth + opt_depth * (1 - hard_seg)
+        #     -------------------------------------------
+            # points = points * hard_seg
+            # n_planes = planes.size(1) // 3
+            # res_cloud = torch.zeros_like(points)
+            # for pt in range(n_planes):
+            #     mask = planes[:, pt:pt + 1, :, :]
+            #     loc_points = points * mask
+            #     loc_normals = normals * mask
+            #     for module in self.smoothing_l:
+            #         loc_points = module(loc_points, loc_normals.clone())
+            #         loc_points = loc_points * mask
+            #     res_cloud = res_cloud + loc_points
+            # seg = torch.sign(torch.sum(planes[:, 0:n_planes, :, :], dim=1, keepdim=True))
+            # res_cloud = seg * res_cloud + (1 - seg) * points
+            # outputs["pcl"].append(res_cloud)
+
+            #  -----------------------------------------
+
+            # planar_depth = self.planar_to_depth(opt_depth.clone().detach(),
+            #                                     planes, pred_seg.detach(),
+            #                                     pred_normals.clone().detach())
+            # planar_points = self.to3d(planar_depth)
+            # planar_points = seg * planar_points + (1 - seg) * points
+
+            # outputs["pcl"].append(planar_points)
+            # planes = inputs[DataType.Planes]
+            # planar_depth = self.planar_to_depth(opt_depth.clone().detach(), planes,
+            #                                     pred_seg.clone().detach(),
+            #                                     pred_normals.clone().detach())
+            # outputs["depth1x_planar"] = planar_depth
+            # outputs["depth1x_smooth"] = smooth_depth
+            # depth_map = self.prediction_planar(decoder1_2_out)
+            # feat_planar = torch.cat((planar_depth, seg, depth_map), dim=1)
+            # refined_depth = self.prediction_planar2(feat_planar)
+            # outputs["depth_ref"] = hard_seg * smooth_depth + (1 - hard_seg) * opt_depth
 
         if (self.calc_normals and self.calc_planes
                 and DataType.Planes in inputs and self.calc_segmentation):
             planes = inputs[DataType.Planes]
             planar_depth = self.planar_to_depth(opt_depth.detach(), planes,
                                                 pred_seg.detach(), pred_normals.detach())
-            good_numbers = torch.isfinite(planar_depth).all().item()
-            if not good_numbers:
-                print("found inifinst")
+
             # outputs["depth_planar"] = planar_depth
-            feat_planar = torch.cat((planar_depth, opt_depth), dim=1)
-            residuum = torch.sigmoid(self.fusion(feat_planar))
-            refined_depth = planar_depth * residuum + (1 - residuum) * opt_depth
-            outputs["guidance"] = residuum
-            outputs["guidance2"] = torch.sigmoid(pred_seg) * residuum
-            outputs["depth_ref"] = refined_depth
+            # feat_planar = torch.cat((planar_depth, opt_depth), dim=1)
+            # residuum = torch.sigmoid(self.fusion(feat_planar))
+            # refined_depth = planar_depth * residuum + (1 - residuum) * opt_depth
+            # outputs["guidance"] = residuum
+            # outputs["guidance2"] = torch.sigmoid(pred_seg) * residuum
+            # outputs["depth_ref"] = refined_depth
             # outputs["depth1x"] = refined_depth
+
+            emb_d = self.fusion_d(opt_depth)
+            emb_g = self.fusion_g(planar_depth)
+            feat_planar = torch.cat((emb_d, emb_g), dim=1)
+            emb_f = self.fusion(feat_planar)
+            refined_depth = emb_f + planar_depth
+            outputs["depth_ref"] = refined_depth
+            outputs["guidance"] = [emb_d, emb_g, emb_f]
 
         return outputs
 
@@ -623,9 +693,13 @@ class RectNet(nn.Module):
             data.add(outputs["depth_normals"], DataType.DepthNormals)
 
         if "guidance" in outputs:
-            data.add(outputs["guidance"], DataType.Guidance)
-        if "guidance2" in outputs:
-            data.add(outputs["guidance2"], DataType.Guidance)
+            for guidance in outputs["guidance"]:
+                data.add(guidance, DataType.Guidance)
+
+        if "pcl" in outputs:
+            for pcl in outputs["pcl"]:
+                data.add(pcl.detach(), DataType.Points3d)
+
         return data
 
 
@@ -1252,36 +1326,6 @@ class SkipBlock(nn.Module):
         return out1 + out3
 
 
-class Depth2Points(nn.Module):
-    def __init__(self, height, width):
-        super(Depth2Points, self).__init__()
-        phi = torch.zeros((height, width))
-        theta = torch.zeros((height, width))
-
-        hcam_deg = 360
-        vcam_deg = 180
-        # Camera rotation angles in radians
-        hcam_rad = hcam_deg / 180.0 * np.pi
-        vcam_rad = vcam_deg / 180.0 * np.pi
-        # print(hcam_deg, vcam_deg)
-        for v in range(height):
-            for u in range(width):
-                theta[v, u] = (u - width / 2.0) / width * hcam_rad
-                phi[v, u] = -(v - height / 2.0) / height * vcam_rad
-        self.cos_theta = nn.Parameter(torch.cos(theta), requires_grad=False)
-        self.sin_theta = nn.Parameter(torch.sin(theta), requires_grad=False)
-        self.cos_phi = nn.Parameter(torch.cos(phi), requires_grad=False)
-        self.sin_phi = nn.Parameter(torch.sin(phi), requires_grad=False)
-
-    def forward(self, depth):
-        X = depth * self.cos_phi * self.cos_theta
-        Y = depth * self.cos_phi * self.sin_theta
-        Z = depth * self.sin_phi
-        points = torch.cat((X, Y, Z), dim=1)
-        # print(points)
-        return points
-
-
 def planeAwarePooling(params, planes, keepdim=False):
     '''
         params: B x 1 x 3 x N
@@ -1323,10 +1367,11 @@ class PlanarToDepth(nn.Module):
         ranged_depths = depth * valid_pixels
         return ranged_depths
 
-    def forward(self, depth, planes, segmentation, normals):
+    def forward(self, depth, planes, segmentation, normals, robust=True):
         points = self.to3d(depth)
         rays = self.to3d(torch.ones_like(depth))
         eps = 0.000001
+        treshold = 0.8
         # planes = planes[:, 0:3, :, :]
         b, p, h, w = planes.size()
         planes_r = torch.reshape(planes, (b, p, 1, -1))
@@ -1338,6 +1383,15 @@ class PlanarToDepth(nn.Module):
         # BxPx3xN
         avg_normals = planeAwarePooling(normals, planes_r, keepdim=True)
         centroids = planeAwarePooling(points, planes_r, keepdim=True)
+        if robust:
+            # BxPx1xN
+            cos_angle = torch.sum(avg_normals * normals, dim=2, keepdim=True)
+            normal_mask = torch.where(cos_angle > treshold,
+                                      torch.ones_like(planes_r), torch.zeros_like(planes_r))
+            # Bx1x1xN
+            normal_mask = torch.sum(normal_mask, dim=1, keepdim=True)
+            avg_normals = planeAwarePooling(normal_mask * normals,
+                                            normal_mask * planes_r, keepdim=True)
 
         # calculate distance to plane from camera center
         planes_bin = torch.sign(planes_r)
@@ -1350,6 +1404,10 @@ class PlanarToDepth(nn.Module):
         planar_depths = self.normalizeRange(planar_depths)
 
         planar_depths = planar_depths / norm
+        nan_count = (1 - torch.isfinite(planar_depths)).sum().item()
+        if nan_count > 0:
+            print("found # inifinst", nan_count)
+
         planar_depths = torch.where(torch.isfinite(planar_depths),
                                     planar_depths, torch.zeros_like(planar_depths))
         # assert(not torch.isnan(planar_depths).any())

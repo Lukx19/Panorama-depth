@@ -3,7 +3,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
 from annotated_data import DataType
-from network import Depth2Points, planeAwarePooling, toPlaneParams, signToLabel, DepthToNormals
+from network import planeAwarePooling, toPlaneParams, signToLabel, DepthToNormals
+from modules import Depth2Points
 from util import mergeInDict
 
 
@@ -479,8 +480,9 @@ class CosineDepthNormalsLoss(nn.Module):
         losses = {}
         mask = data.get(DataType.Mask, scale=1)[0]
         gt_depth = data.get(DataType.Depth)[0] * mask
+        pred_depth = predictions.get(DataType.Depth)[0] * mask
 
-        pred_normals = predictions.get(DataType.DepthNormals)[0] * mask
+        pred_normals = self.depth_normals(pred_depth)
 
         # pred_depth = predictions.get(DataType.Depth)[0] * mask
         # pred_normals = self.depth_normals(pred_depth)
@@ -503,7 +505,7 @@ class PlaneNormSegLoss(nn.Module):
         # self.sobel = Sobel()
         self.normal_loss = normal_loss
         self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
-        # self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
+        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -523,6 +525,7 @@ class PlaneNormSegLoss(nn.Module):
         # l, h = self.depth_cosine_loss(predictions, data)
         # losses = mergeInDict(losses, l)
         # histograms = mergeInDict(histograms, h)
+
         # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
         #     gt = data.get(DataType.Depth, scale=scale)[0]
         #     mask = data.get(DataType.Mask, scale=scale)[0]

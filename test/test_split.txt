@@ -1,0 +1,5 @@
+/Stanford/area3/33_area_31_color_0_Left_Down_90.0.png /Stanford/area3/33_area_31_depth_0_Left_Down_90.0.tiff
+/Stanford/area3/5_area_31_color_0_Left_Down_270.0.png /Stanford/area3/5_area_31_depth_0_Left_Down_270.0.tiff
+/Stanford/area3/20_area_31_color_0_Left_Down_90.0.png /Stanford/area3/20_area_31_depth_0_Left_Down_90.0.tiff
+/Matterport/8_e0166dba74ee42fd80fccc26fe3f02c81_color_0_Left_Down_0.0.png /Matterport/8_e0166dba74ee42fd80fccc26fe3f02c81_depth_0_Left_Down_0.0.tiff
+/SunCG/2b2e37df107bca6bbf76340f7ab124181_color_0_Left_Down_180.0.png /SunCG/2b2e37df107bca6bbf76340f7ab124181_depth_0_Left_Down_180.0.tiff

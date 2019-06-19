@@ -1,5 +1,6 @@
 import torch
-from network import Depth2Points, planeAwarePooling
+from network import planeAwarePooling
+from modules import Depth2Points
 import numpy as np
 from scipy import ndimage
 from skimage import feature
@@ -20,14 +21,14 @@ def sq_rel_error(pred, gt, mask):
 
 def lin_rms_sq_error(pred, gt, mask):
     '''Compute the linear RMS error except the final square-root step'''
-    return ((pred[mask > 0] - gt[mask > 0]) ** 2).mean()
+    return torch.sqrt(((pred[mask > 0] - gt[mask > 0]) ** 2).mean())
 
 
 def log_rms_sq_error(pred, gt, mask):
     '''Compute the log RMS error except the final square-root step'''
-    mask = (mask > 0) & (pred > 1e-7) & (gt >
-                                         1e-7)  # Compute a mask of valid values
-    return ((pred[mask].log() - gt[mask].log()) ** 2).mean()
+    # Compute a mask of valid values
+    mask = (mask > 0) & (pred > 1e-7) & (gt > 1e-7)
+    return torch.sqrt(((pred[mask].log() - gt[mask].log()) ** 2).mean())
 
 
 def delta_inlier_ratio(pred, gt, mask, degree=1):
@@ -214,3 +215,12 @@ def depth_boundary_error(pred, gt, mask):
         dbe_com = np.nansum(D_est * edges_gt) / np.nansum(edges_gt)
 
     return dbe_acc, dbe_com
+
+
+# import numpy as np
+# import cv2
+# imgrgb = cv2.cvtColor(img, cv2.COLOR_BGR2RGB) / 255
+# imgrgb = imgrgb.astype(np.float32)
+# model = 'structured edge/model.yml'
+# retval = cv2.ximgproc.createStructuredEdgeDetection(model)
+# out = retval.detectEdges(imgrgb)

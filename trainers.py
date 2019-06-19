@@ -565,6 +565,10 @@ class MonoTrainer(object):
         # Print a report on the validation results
         print('Validation finished in {} seconds'.format(time.time() - s))
         report = self.print_validation_report()
+        with open(osp.join(self.checkpoint_dir, "validation_res.txt"), mode="a") as f:
+            f.write("\n\n Epoch {} \n".format(self.epoch + 1))
+            f.write(report)
+
         self.network = self.network.train()
         return report
 
@@ -842,7 +846,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     '''
     Updates the output samples visualization
     '''
-
+    save_to_disk = False
     data_folder = osp.join(directory, "visdom")
     os.makedirs(data_folder, exist_ok=True)
     # visdom[0].save([visdom[1]])
@@ -1024,6 +1028,14 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pcl_gt = panoDepthToPcl(gt_depth, rgb)
     savePcl(pcl_gt[0], pcl_gt[1], osp.join(data_folder, 'pcl_gt_cloud.ply'))
 
+    normals = np.reshape(pred_normals, (-1, 3))
+    color = np.reshape(rgb, (-1, 3))
+    for i, pts in enumerate(output.get(DataType.Points3d)):
+        pts = pts[0].cpu().permute(1, 2, 0).numpy()
+        pts = np.reshape(pts, (-1, 3))
+        savePcl(pts, color, osp.join(data_folder, 'points3d_' + str(i) + '.ply'),
+                normals=normals)
+
 
 @pytorchDetachedProcess
 def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
@@ -1034,11 +1046,12 @@ def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
     os.makedirs(data_folder, exist_ok=True)
 
     for key, tracker in loss_trackers.items():
+        key_name = key + "_loss"
         graph = linePlot([(key, tracker.x, tracker.y, None)])
-        file = osp.join(data_folder, key + '.json')
-        py.io.write_json(graph, file)
 
         if save_to_disk:
-            py.io.write_image(graph, osp.join(data_folder, key + '.png'))
+            file = osp.join(data_folder, key_name + '.json')
+            py.io.write_json(graph, file)
+            py.io.write_image(graph, osp.join(data_folder, key_name + '.png'))
         if visdom is not None:
-            visdom[0].plotlyplot(graph, win=key, env=visdom[1])
+            visdom[0].plotlyplot(graph, win=key_name, env=visdom[1])
