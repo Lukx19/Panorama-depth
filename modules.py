@@ -35,7 +35,7 @@ class Depth2Points(nn.Module):
 
 
 class SmoothConv(nn.Module):
-    def __init__(self, kernel_size, dilation=1, padding=0):
+    def __init__(self, kernel_size, dilation=1, padding=0, iterations=1):
         super(SmoothConv, self).__init__()
         if type(kernel_size) is int:
             self.kernel_size = (kernel_size, kernel_size)
@@ -44,6 +44,7 @@ class SmoothConv(nn.Module):
 
         self.unfold = torch.nn.Unfold(kernel_size=kernel_size, dilation=dilation,
                                       padding=padding, stride=1)
+        self.iterations = iterations
 
     def normalDist(self, x, sigma):
         return torch.exp((-x**2) / (2 * sigma**2))
@@ -52,10 +53,8 @@ class SmoothConv(nn.Module):
         _, _, height, width = points.size()
         if segmentation is None:
             combined_data = torch.cat((points, normals.clone()), dim=1)
-            # comb_dims = 6
         else:
             combined_data = torch.cat((points, normals.clone(), segmentation), dim=1)
-            # comb_dims = 7
 
         unfolded = self.unfold(combined_data)
         b, n, k = unfolded.size()
@@ -90,17 +89,32 @@ class SmoothConv(nn.Module):
             weight = W_n * W_p * W_s
         # weight = W_c
         weight = weight.clone().detach()
+        normalization = torch.sum(weight.clone(), dim=3)
+        mask = torch.sign(torch.abs(pts_i))
         # print(weight.size())
-
-        normal_pts_dot = weight * torch.sum(points_diff * normals_ker, dim=2, keepdim=True)
+        for it in range(self.iterations):
+            points_diff = pts_ker - pts_i
+            normal_pts_dot = weight * torch.sum(points_diff * normals_ker, dim=2, keepdim=True)
         # normal_pts_dot = weight
         # improvement = (torch.sum(normals_ker * normal_pts_dot, dim=3)) / (Kh * Kw)
-        normalization = torch.sum(weight, dim=3)
-        improvement = (torch.sum(normals_ker * normal_pts_dot, dim=3)) / normalization
+            improvement = (torch.sum(normals_ker * normal_pts_dot, dim=3)) / normalization
         # print(improvement.size())
-        improvement = improvement.permute(0, 2, 1)
-        improvement = torch.reshape(improvement, (b, 3, height, width))
-        return points + improvement
+            improvement = improvement.permute(0, 2, 1)
+            improvement = torch.reshape(improvement, (b, 3, height, width))
+
+            if self.iterations > 1:
+                unfolded_imp = self.unfold(improvement)
+                unfolded_imp = torch.transpose(unfolded_imp, dim0=1, dim1=2)
+                unfolded_imp = torch.reshape(unfolded_imp, (b, k, -1, Kh * Kw))
+                pts_ker = (pts_ker + unfolded_imp) * mask
+                pts_i = pts_ker[:, :, :, kernel_mid:kernel_mid + 1]
+
+        if self.iterations == 1:
+            points = points + improvement
+        else:
+            points = torch.squeeze(pts_i).permute(0, 2, 1)
+            points = torch.reshape(points, (b, 3, height, width))
+        return points
 
 
 class PlanarConv(nn.Module):
