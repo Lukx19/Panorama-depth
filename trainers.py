@@ -583,8 +583,8 @@ class MonoTrainer(object):
             # self.initialize_visualizations()
             # make sure that validation is correct without bugs
 
-        # self.validate()
-        # self.visualize_metrics()
+        self.validate()
+        self.visualize_metrics()
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -917,6 +917,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     gt_seg = data.get(DataType.PlanarSegmentation, scale=1)
     if visdom is not None and len(pred_seg) > 0 and len(gt_seg) > 0:
         pred_seg = pred_seg[0][0].cpu()
+        pred_seg = torch.sigmoid(pred_seg)
         gt_seg = gt_seg[0][0].cpu()
         visdom[0].heatmap(
             gt_seg.squeeze().flip(0),

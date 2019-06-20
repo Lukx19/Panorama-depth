@@ -353,13 +353,13 @@ class GradLoss(nn.Module):
             if i == 0 or self.all_levels:
                 revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel, self.adaptive)
                 for key, loss in revis_losses.items():
-                    losses[key + "_" + str(scale) + "_" + str(i)] = loss
+                    losses[key + "_s" + str(scale) + "_" + str(i)] = loss
 
                 for key, hist in revis_hist.items():
-                    histograms[key + "_" + str(scale) + "_" + str(i)] = hist
+                    histograms[key + "_s" + str(scale) + "_" + str(i)] = hist
             else:
                 l2_loss = self.l2_loss(pred, gt, mask)
-                losses["revis_l2" + "_" + str(scale) + "_" + str(i)] = l2_loss
+                losses["revis_l2" + "_s" + str(scale) + "_" + str(i)] = l2_loss
 
         if self.depth_normals:
             l, h = self.depth_cosine_loss(predictions, data)

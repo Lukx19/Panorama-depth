@@ -424,7 +424,7 @@ class RectNet(nn.Module):
             with torch.no_grad():
                 self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
                 self.d2pt_2x = Points2Depths(self.height // 2, self.width // 2)
-                self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=9, padding=20,
+                self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=5, padding=10,
                                                              dilation=5, iterations=2),
                                                   ])
 
@@ -532,19 +532,19 @@ class RectNet(nn.Module):
             # 1.1 calculate 1x segmentation
             seg_out = self.decoder1_seg(decoder1_0_out)
             pred_seg = self.decoder2_seg(seg_out)
-            pred_seg = torch.sigmoid(pred_seg)
             outputs["segmentation"] = pred_seg
             # 2. downsample to 1/2 resolution -> reduce noise
             normals_2x = self.avg_pool_normal(pred_normals).detach()
-            seg_2x = self.avg_pool_seg(pred_seg).detach()
+            seg_2x = self.avg_pool_seg(torch.sigmoid(pred_seg.clone())).detach()
             # 3. smooth depth based on normals
             outputs["pcl"] = []
             outputs["pcl2x"] = []
             with torch.no_grad():
-                seg_2x[:, :, 0:20, :] = 0
-                seg_2x[:, :, -20:, :] = 0
                 hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
                                        torch.zeros_like(seg_2x))
+                # hard_seg = torch.ones_like(seg_2x)
+                hard_seg[:, :, 0:10, :] = 0
+                hard_seg[:, :, -10:, :] = 0
                 points_2x = self.to3d_2x(pred_2x.detach())
                 outputs["pcl2x"].append(points_2x)
                 smooth_pts = points_2x * hard_seg

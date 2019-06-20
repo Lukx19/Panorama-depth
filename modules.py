@@ -112,7 +112,8 @@ class SmoothConv(nn.Module):
         if self.iterations == 1:
             points = points + improvement
         else:
-            points = torch.squeeze(pts_i).permute(0, 2, 1)
+            pts_i = torch.reshape(pts_i, (b, k, -1))
+            points = pts_i.permute(0, 2, 1)
             points = torch.reshape(points, (b, 3, height, width))
         return points
 
