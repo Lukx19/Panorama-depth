@@ -583,8 +583,8 @@ class MonoTrainer(object):
             # self.initialize_visualizations()
             # make sure that validation is correct without bugs
 
-        self.validate()
-        self.visualize_metrics()
+        # self.validate()
+        # self.visualize_metrics()
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -741,6 +741,8 @@ class MonoTrainer(object):
             self.err_trackers[key].update(epoch, meter.avg, meter.std)
 
         res_folder = osp.join(self.checkpoint_dir, "visdom")
+        os.makedirs(res_folder, exist_ok=True)
+
         traces = []
         for key, tracker in self.err_trackers.items():
             traces.append((key, tracker.x, tracker.y, tracker.std))

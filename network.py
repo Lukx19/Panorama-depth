@@ -8,7 +8,7 @@ import torch.nn.functional as F
 # import torchvision.models as models
 
 from util import xavier_init
-from annotated_data import AnnotatedData, DataType
+from annotated_data import AnnotatedData, DataType, Annotation
 import numpy as np
 from modules import SmoothConv, PlanarConv, Depth2Points, Points2Depths
 # from mean_shift import Bin_Mean_Shift
@@ -304,15 +304,29 @@ class ExpSegNormals(nn.Module):
         }
 
 
+rectnet_ops = {
+    "dilation": [(2, 5), (5, 2), (2, 2)],
+    "iterations": [10, 10, 5],
+    "kernel_size": [(5, 7), (7, 5), (3, 3)],
+    "smooth_treshold": 0.4,
+    "reflection_pad": False,
+    "cspn": False,
+    "sigma_c_mult": [0.4, 0.4, 0.2],
+    "sigma_n": [1 / 3, 1 / 3, 1 / 3],
+}
+
+
 class RectNet(nn.Module):
 
-    def __init__(self, in_channels, cspn=False, reflection_pad=False,
+    def __init__(self, in_channels,
                  normal_est=False, segmentation_est=False,
                  calc_planes=False, normals_est_type='standart',
-                 normal_smoothing=False):
+                 normal_smoothing=False, plane_type="fusion", ops=rectnet_ops):
         super(RectNet, self).__init__()
         self.height = 256
         self.width = 512
+        self.ops = ops
+        reflection_pad = self.ops.reflection_pad
         # Network definition
         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(
             1, 4), reflection_pad=reflection_pad)
@@ -377,28 +391,42 @@ class RectNet(nn.Module):
 
         self.prediction1 = nn.Conv2d(64, 1, 3, padding=1)
 
-        self.cspn = cspn
+        self.cspn = self.ops.cspn
         if self.cspn:
             self.guidance = ConvELUBlock(
                 64, 8, 3, padding=1, reflection_pad=reflection_pad)
             self.cspn = CSPN()
-        self.depth_normals = DepthToNormals(height=self.height, width=self.width,
-                                            kernel_size=3, padding=2, dilation=2)
+
+        # self.depth_normals = DepthToNormals(height=self.height, width=self.width,
+        #                                     kernel_size=3, padding=2, dilation=2)
 
         self.calc_normals = normal_est
         self.calc_planes = calc_planes
         self.calc_segmentation = segmentation_est
         self.normal_smoothing = normal_smoothing
+        self.plane_type = plane_type
+        self.calc_norm_seg_2x = False
+        self.calc_merge_guidance = False
 
         if self.calc_planes:
-            self.calc_normals = True
-            self.calc_segmentation = True
+            if self.plane_type == "fusion":
+                self.calc_normals = True
+                self.calc_segmentation = True
+            elif self.plane_type == "downsampled":
+                self.calc_normals = False
+                self.calc_segmentation = False
+                self.calc_norm_seg_2x = True
+                self.calc_merge_guidance = True
+
         if self.normal_smoothing:
-            self.calc_normals = True
+            self.calc_normals = False
+            self.calc_norm_seg_2x = True
             self.calc_planes = False
+            self.calc_segmentation = False
+            self.calc_merge_guidance = True
 
         self.normals_type = normals_est_type
-        if self.calc_normals:
+        if self.calc_normals or self.calc_norm_seg_2x:
             if self.normals_type == "standart":
                 self.normals = NormalsEmbedding(in_channels=64)
             elif self.normals_type == "sphere":
@@ -410,8 +438,7 @@ class RectNet(nn.Module):
             else:
                 raise ValueError("Unknown type of normal prediction module")
 
-        if self.normal_smoothing:
-
+        if self.calc_norm_seg_2x:
             self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
                                                 reflection_pad=reflection_pad)
             self.decoder1_seg = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
@@ -421,31 +448,58 @@ class RectNet(nn.Module):
             self.avg_pool_normal = nn.AvgPool2d(3, stride=2, padding=1)
             self.avg_pool_seg = nn.AvgPool2d(3, stride=2, padding=1)
 
+        if self.normal_smoothing:
             with torch.no_grad():
+                self.to3d = Depth2Points(self.height, self.width)
                 self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
                 self.d2pt_2x = Points2Depths(self.height // 2, self.width // 2)
-                self.smoothing_l = nn.ModuleList([SmoothConv(kernel_size=5, padding=10,
-                                                             dilation=5, iterations=2),
-                                                  ])
+                smooth_layers = []
+                for kernel_size, dilation, iters, sigma_c_mult, sigma_n in zip(
+                        self.ops["kernel_size"], self.ops["dilation"], self.ops["iterations"],
+                        self.ops["sigma_c_mult"], self.ops["sigma_n"]):
+                    kx, ky = kernel_size
+                    dx, dy = dilation
+                    px, py = (kx // 2 * dx), (ky // 2 * dy)
+                    smooth_layers.append(SmoothConv(kernel_size=kernel_size, padding=(px, py),
+                                                    dilation=(dx, dy), iterations=iters,
+                                                    sigma_c_mult=sigma_c_mult,
+                                                    sigma_n=sigma_n))
 
-        if self.calc_segmentation and not self.normal_smoothing:
-            self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1)
-            self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2)
+                self.smoothing_l = nn.ModuleList(smooth_layers)
+
+        if self.calc_segmentation:
+            self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1, reflection_pad=reflection_pad)
+            self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2,
+                                         reflection_pad=reflection_pad)
             self.seg_cov3 = nn.Conv2d(32, 1, 1)
 
-        if self.calc_planes and not self.normal_smoothing:
-            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
-            self.fusion_d = FilterBlock(in_channels=1)
-            self.fusion_g = FilterBlock(in_channels=1)
-            self.fusion = FilterBlock(in_channels=2)
+        if self.calc_planes:
+            if self.plane_type == "fusion":
+                self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+                self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
+                self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
+                self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad)
+            if self.plane_type == "downsampled":
+                self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
+                self.to3d = Depth2Points(self.height, self.width)
+                self.planar_to_depth = PlanarToDepth(height=self.height // 2, width=self.width // 2)
+                self.merge_conv_p = nn.Conv2d(1, 16, 3, padding=1)
+                self.merge_conv_d = nn.Conv2d(1, 16, 3, padding=1)
+                self.merge_conv = nn.Conv2d(32, 1, 3, padding=1)
+
             # self.prediction_planar = nn.Conv2d(66, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
             # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
+        if self.calc_merge_guidance:
+            self.guidance = nn.Conv2d(64, 1, 3, padding=1)
         self.apply(xavier_init)
 
     def forward(self, inputs):
         outputs = {}
+        outputs["pcl"] = []
+        outputs["pcl2x"] = []
+
         x = inputs[DataType.Image]
         if DataType.SparseDepth in inputs:
             sparse_depth = inputs[DataType.SparseDepth][1]
@@ -506,15 +560,14 @@ class RectNet(nn.Module):
         # print(decoder0_1_out.size())
         # 2x downsampled prediction
         pred_2x = self.prediction0(decoder0_1_out)
-        upsampled_pred_2x = F.interpolate(pred_2x.detach(), scale_factor=2)
+        upsampled_pred_2x = F.interpolate(pred_2x.detach(), scale_factor=2, mode='bilinear')
 
         # Second decoding block
         decoder1_0_out = self.decoder1_0(decoder0_1_out)
-        # print(decoder1_0_out.size())
-        # print('***********')
-        decoder1_1_out = self.decoder1_1(decoder1_0_out)
 
-        if self.normal_smoothing:
+        normals_2x = None
+        seg_2x = None
+        if self.calc_norm_seg_2x:
             #  1. calculate normals with decoder from in 1x resolution
             normals_input = self.decoder1_normal(decoder1_0_out)
             if self.normals_type == "sphere":
@@ -536,9 +589,9 @@ class RectNet(nn.Module):
             # 2. downsample to 1/2 resolution -> reduce noise
             normals_2x = self.avg_pool_normal(pred_normals).detach()
             seg_2x = self.avg_pool_seg(torch.sigmoid(pred_seg.clone())).detach()
+
+        if self.normal_smoothing:
             # 3. smooth depth based on normals
-            outputs["pcl"] = []
-            outputs["pcl2x"] = []
             with torch.no_grad():
                 hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
                                        torch.zeros_like(seg_2x))
@@ -550,19 +603,46 @@ class RectNet(nn.Module):
                 smooth_pts = points_2x * hard_seg
                 smooth_normals = hard_seg * normals_2x
                 for module in self.smoothing_l:
-                    smooth_pts = module(smooth_pts, smooth_normals, None)
+                    smooth_pts = module(smooth_pts, smooth_normals, None, hard_seg)
                     # smooth_pts = smooth_pts * hard_seg
                     # smooth_normals = hard_seg * smooth_normals
                     outputs["pcl2x"].append(smooth_pts)
 
                 # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
                 smooth_depth_2x = self.d2pt_2x(pred_2x.detach(), smooth_pts, normals_2x)
-                outputs["pcl2x"].append(self.to3d_2x(smooth_depth_2x.clone().detach()))
-                smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
-                upsampled_pred_2x = F.interpolate(smooth_depth_2x.detach(), scale_factor=2)
+                depth_diff = torch.abs(pred_2x - smooth_depth_2x)
+                smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
+                                              pred_2x, smooth_depth_2x)
+                # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
+                upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
+                                                       scale_factor=2, mode="bilinear")
+                upsampled_pred_2x = upsampled_planar_depth
+                outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+            # print(upsampled_planar_depth.requires_grad)
 
+        if self.calc_planes and self.plane_type == "downsampled" and DataType.Planes in inputs:
+            planes = inputs[DataType.Planes]
+            planes_2x = F.max_pool2d(planes, kernel_size=3, stride=2, padding=1)
+            planar_depth_2x = self.planar_to_depth(pred_2x.detach(), planes_2x,
+                                                   seg_2x.detach(), normals_2x.detach(),
+                                                   robust=False)
+            outputs["pcl2x"].append(self.to3d_2x(pred_2x.clone().detach()))
+            depth_diff = torch.abs(pred_2x - planar_depth_2x)
+            planar_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
+                                          pred_2x, planar_depth_2x)
+            outputs["pcl2x"].append(self.to3d_2x(planar_depth_2x.clone().detach()))
+
+            emb_depth = self.merge_conv_d(pred_2x)
+            emb_plane = self.merge_conv_p(planar_depth_2x)
+            refined_planar_2x = self.merge_conv(torch.cat((emb_depth, emb_plane), dim=1))
+            # refined_planar_2x = planar_depth_2x
+            upsampled_planar_depth = F.interpolate(refined_planar_2x, scale_factor=2,
+                                                   mode="bilinear")
+            outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+
+        decoder1_1_out = self.decoder1_1(decoder1_0_out)
         decoder1_2_out = self.decoder1_2(
-            torch.cat((upsampled_pred_2x, decoder1_1_out), 1))
+            torch.cat((upsampled_pred_2x.detach(), decoder1_1_out), 1))
 
         # Second prediction output (original scale)
         pred_1x = self.prediction1(decoder1_2_out)
@@ -576,6 +656,30 @@ class RectNet(nn.Module):
 
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
+
+        merge_seg = None
+        if self.calc_merge_guidance:
+            merge = self.guidance(decoder1_2_out)
+            merge_seg = torch.sigmoid(merge)
+            outputs["guidance"] = [merge_seg.clone().detach()]
+
+            # planar_seg = torch.sigmoid(pred_seg)
+            # nonplanar_seg = 1 - planar_seg
+            # hard_seg = torch.where(pred_seg > 0.5, torch.ones_like(pred_seg),
+            #                        torch.zeros_like(pred_seg))
+            # outputs["depth_planar"] = upsampled_planar_depth * merge_seg
+            planar_depth = upsampled_planar_depth * merge_seg
+            # outputs["depth_nonplanar"] = opt_depth * (1 - merge_seg)
+            basic_depth = opt_depth * (1 - merge_seg)
+
+            # outputs["pcl"].append(self.to3d(outputs["depth_planar"].clone().detach()))
+            # outputs["pcl"].append(self.to3d(outputs["depth_nonplanar"].clone().detach()))
+
+            refined_depth = planar_depth + basic_depth
+
+            outputs["pcl"].append(self.to3d(refined_depth.clone().detach()))
+            outputs["depth1x"] = refined_depth
+
         # outputs["depth_normals"] = self.depth_normals(opt_depth)
         if self.calc_normals and not self.normal_smoothing:
             if self.normal_smoothing:
@@ -605,98 +709,29 @@ class RectNet(nn.Module):
             pred_seg = self.seg_cov3(seg_cat)
             outputs["segmentation"] = pred_seg
 
-        # if self.normal_smoothing:
-        #     smooth_depth = opt_depth
-        #     normals = outputs["normals"].clone().detach()
-        #     seg = outputs["segmentation"]
-        #     # planes = inputs[DataType.Planes]
-        #     # seg = torch.ones_like(seg)
-        #     # print(planes.size())
-        #     # seg = torch.sign(torch.sum(planes[:, :, :, :], dim=1, keepdim=True))
-        #     seg[:, :, 0:20, :] = 0
-        #     seg[:, :, -20:, :] = 0
-        #     # print(seg.size())
-        #     # for layer in self.smoothing_l:
-        #     #     smooth_depth = layer(smooth_depth, normals)
-        #     hard_seg = torch.where(seg > 0.5, torch.ones_like(seg), torch.zeros_like(seg))
-        #     # smooth_depth = hard_seg * smooth_depth
-        #     # normals = hard_seg * normals
-        #     # smooth_depth = self.planar_cov(smooth_depth, normals)
+        # if (self.calc_normals and self.calc_planes
+        #         and DataType.Planes in inputs and self.calc_segmentation
+        #         and self.plane_type == "fusion"):
+        #     planes = inputs[DataType.Planes]
+        #     planar_depth = self.planar_to_depth(opt_depth.detach(), planes,
+        #                                         pred_seg.detach(), pred_normals.detach())
+        #     print("aaaaa")
+        #     # outputs["depth_planar"] = planar_depth
+        #     # feat_planar = torch.cat((planar_depth, opt_depth), dim=1)
+        #     # residuum = torch.sigmoid(self.fusion(feat_planar))
+        #     # refined_depth = planar_depth * residuum + (1 - residuum) * opt_depth
+        #     # outputs["guidance"] = residuum
+        #     # outputs["guidance2"] = torch.sigmoid(pred_seg) * residuum
+        #     # outputs["depth_ref"] = refined_depth
+        #     # outputs["depth1x"] = refined_depth
 
-        #     points = self.to3d(smooth_depth)
-        #     #  ---------------------------------------------
-        #     outputs["pcl"] = []
-        #     smooth_pts = points
-        #     smooth_pts = smooth_pts * hard_seg
-        #     smooth_normals = hard_seg * normals.clone()
-        #     for module in self.smoothing_l:
-        #         smooth_pts = module(smooth_pts, smooth_normals, None)
-        #         smooth_pts = smooth_pts * hard_seg
-        #         smooth_normals = hard_seg * smooth_normals
-        #         outputs["pcl"].append(smooth_pts)
-
-        #     # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
-        #     smooth_depth = self.d2pt(smooth_depth, smooth_pts, normals)
-        #     outputs["pcl"].append(self.to3d(smooth_depth.clone()))
-        #     outputs["depth_ref"] = hard_seg * smooth_depth + opt_depth * (1 - hard_seg)
-        #     -------------------------------------------
-            # points = points * hard_seg
-            # n_planes = planes.size(1) // 3
-            # res_cloud = torch.zeros_like(points)
-            # for pt in range(n_planes):
-            #     mask = planes[:, pt:pt + 1, :, :]
-            #     loc_points = points * mask
-            #     loc_normals = normals * mask
-            #     for module in self.smoothing_l:
-            #         loc_points = module(loc_points, loc_normals.clone())
-            #         loc_points = loc_points * mask
-            #     res_cloud = res_cloud + loc_points
-            # seg = torch.sign(torch.sum(planes[:, 0:n_planes, :, :], dim=1, keepdim=True))
-            # res_cloud = seg * res_cloud + (1 - seg) * points
-            # outputs["pcl"].append(res_cloud)
-
-            #  -----------------------------------------
-
-            # planar_depth = self.planar_to_depth(opt_depth.clone().detach(),
-            #                                     planes, pred_seg.detach(),
-            #                                     pred_normals.clone().detach())
-            # planar_points = self.to3d(planar_depth)
-            # planar_points = seg * planar_points + (1 - seg) * points
-
-            # outputs["pcl"].append(planar_points)
-            # planes = inputs[DataType.Planes]
-            # planar_depth = self.planar_to_depth(opt_depth.clone().detach(), planes,
-            #                                     pred_seg.clone().detach(),
-            #                                     pred_normals.clone().detach())
-            # outputs["depth1x_planar"] = planar_depth
-            # outputs["depth1x_smooth"] = smooth_depth
-            # depth_map = self.prediction_planar(decoder1_2_out)
-            # feat_planar = torch.cat((planar_depth, seg, depth_map), dim=1)
-            # refined_depth = self.prediction_planar2(feat_planar)
-            # outputs["depth_ref"] = hard_seg * smooth_depth + (1 - hard_seg) * opt_depth
-
-        if (self.calc_normals and self.calc_planes
-                and DataType.Planes in inputs and self.calc_segmentation):
-            planes = inputs[DataType.Planes]
-            planar_depth = self.planar_to_depth(opt_depth.detach(), planes,
-                                                pred_seg.detach(), pred_normals.detach())
-
-            # outputs["depth_planar"] = planar_depth
-            # feat_planar = torch.cat((planar_depth, opt_depth), dim=1)
-            # residuum = torch.sigmoid(self.fusion(feat_planar))
-            # refined_depth = planar_depth * residuum + (1 - residuum) * opt_depth
-            # outputs["guidance"] = residuum
-            # outputs["guidance2"] = torch.sigmoid(pred_seg) * residuum
-            # outputs["depth_ref"] = refined_depth
-            # outputs["depth1x"] = refined_depth
-
-            emb_d = self.fusion_d(opt_depth)
-            emb_g = self.fusion_g(planar_depth)
-            feat_planar = torch.cat((emb_d, emb_g), dim=1)
-            emb_f = self.fusion(feat_planar)
-            refined_depth = emb_f + planar_depth
-            outputs["depth_ref"] = refined_depth
-            outputs["guidance"] = [emb_d, emb_g, emb_f]
+        #     emb_d = self.fusion_d(opt_depth)
+        #     emb_g = self.fusion_g(planar_depth)
+        #     feat_planar = torch.cat((emb_d, emb_g), dim=1)
+        #     emb_f = self.fusion(feat_planar)
+        #     refined_depth = emb_f + planar_depth
+        #     outputs["depth_ref"] = refined_depth
+        #     # outputs["guidance"] = [emb_d, emb_g, emb_f]
 
         return outputs
 
@@ -734,6 +769,14 @@ class RectNet(nn.Module):
         if "depth_normals" in outputs:
             data.add(outputs["depth_normals"], DataType.DepthNormals)
 
+        if "depth_planar" in outputs:
+            data.add(outputs["depth_planar"], DataType.Depth, scale=1,
+                     annotation=Annotation.PlanarBranch)
+
+        if "depth_nonplanar" in outputs:
+            data.add(outputs["depth_nonplanar"], DataType.Depth, scale=1,
+                     annotation=Annotation.NonPlanarBranch)
+
         if "guidance" in outputs:
             for guidance in outputs["guidance"]:
                 data.add(guidance, DataType.Guidance)
@@ -749,143 +792,6 @@ class RectNet(nn.Module):
         return data
 
 
-class RectNetCSPN(nn.Module):
-
-    def __init__(self, in_channels, cspn=False):
-        super(RectNetCSPN, self).__init__()
-
-        # Network definition
-        self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(1, 4))
-        self.input0_1 = ConvELUBlock(in_channels, 8, (5, 11), padding=(2, 5))
-        self.input0_2 = ConvELUBlock(in_channels, 8, (5, 7), padding=(2, 3))
-        self.input0_3 = ConvELUBlock(in_channels, 8, 7, padding=3)
-
-        self.input1_0 = ConvELUBlock(32, 16, (3, 9), padding=(1, 4))
-        self.input1_1 = ConvELUBlock(32, 16, (3, 7), padding=(1, 3))
-        self.input1_2 = ConvELUBlock(32, 16, (3, 5), padding=(1, 2))
-        self.input1_3 = ConvELUBlock(32, 16, 5, padding=2)
-
-        self.encoder0_0 = ConvELUBlock(64, 128, 3, stride=2, padding=1)
-        self.encoder0_1 = ConvELUBlock(128, 128, 3, padding=1)
-        self.encoder0_2 = ConvELUBlock(128, 128, 3, padding=1)
-
-        self.encoder1_0 = ConvELUBlock(128, 256, 3, stride=2, padding=1)
-        self.encoder1_1 = ConvELUBlock(256, 256, 3, padding=2, dilation=2)
-        self.encoder1_2 = ConvELUBlock(256, 256, 3, padding=4, dilation=4)
-        self.encoder1_3 = ConvELUBlock(512, 256, 1)
-
-        self.encoder2_0 = ConvELUBlock(256, 512, 3, padding=8, dilation=8)
-        self.encoder2_1 = ConvELUBlock(512, 512, 3, padding=16, dilation=16)
-        self.encoder2_2 = ConvELUBlock(1024, 512, 1)
-
-        self.decoder0_0 = ConvTransposeELUBlock(
-            512, 256, 4, stride=2, padding=1)
-        self.decoder0_1 = ConvELUBlock(256, 256, 5, padding=2)
-
-        self.prediction0 = nn.Conv2d(256, 1, 3, padding=1)
-
-        self.decoder1_0 = ConvTransposeELUBlock(
-            256, 128, 4, stride=2, padding=1)
-        self.decoder1_1 = ConvELUBlock(128, 128, 5, padding=2)
-        self.decoder1_2 = ConvELUBlock(129, 64, 1)
-
-        self.prediction1 = nn.Conv2d(64, 1, 3, padding=1)
-
-        self.cspn = True
-        if self.cspn:
-            self.guid_decode = ConvTransposeELUBlock(
-                256, 128, 4, stride=2, padding=1)
-            self.guid_conv_1 = ConvELUBlock(128, 128, 5, padding=2)
-            # self.guid_conv_2 = ConvELUBlock(129, 64, 1)
-            self.guid_conv_3 = ConvELUBlock(128, 8, 3, padding=1)
-            self.cspn = CSPN()
-        # Initialize the network weights
-        self.apply(xavier_init)
-
-    def forward(self, inputs):
-        x = inputs[DataType.Image]
-        if DataType.SparseDepth in inputs:
-            sparse_depth = inputs[DataType.SparseDepth][1]
-            x = torch.cat((x, sparse_depth), 1)
-        else:
-            sparse_depth = None
-
-        # First filter bank
-        input0_0_out = self.input0_0(x)
-        input0_1_out = self.input0_1(x)
-        input0_2_out = self.input0_2(x)
-        input0_3_out = self.input0_3(x)
-        input0_out_cat = torch.cat(
-            (input0_0_out,
-             input0_1_out,
-             input0_2_out,
-             input0_3_out), 1)
-
-        # Second filter bank
-        input1_0_out = self.input1_0(input0_out_cat)
-        input1_1_out = self.input1_1(input0_out_cat)
-        input1_2_out = self.input1_2(input0_out_cat)
-        input1_3_out = self.input1_3(input0_out_cat)
-
-        # First encoding block
-        encoder0_0_out = self.encoder0_0(
-            torch.cat((input1_0_out,
-                       input1_1_out,
-                       input1_2_out,
-                       input1_3_out), 1))
-        encoder0_1_out = self.encoder0_1(encoder0_0_out)
-        encoder0_2_out = self.encoder0_2(encoder0_1_out)
-
-        # Second encoding block
-        encoder1_0_out = self.encoder1_0(encoder0_2_out)
-        encoder1_1_out = self.encoder1_1(encoder1_0_out)
-        encoder1_2_out = self.encoder1_2(encoder1_1_out)
-        encoder1_3_out = self.encoder1_3(
-            torch.cat((encoder1_1_out, encoder1_2_out), 1))
-
-        # Third encoding block
-        encoder2_0_out = self.encoder2_0(encoder1_3_out)
-        encoder2_1_out = self.encoder2_1(encoder2_0_out)
-        encoder2_2_out = self.encoder2_2(
-            torch.cat((encoder2_0_out, encoder2_1_out), 1))
-
-        # First decoding block
-        decoder0_0_out = self.decoder0_0(encoder2_2_out)
-        decoder0_1_out = self.decoder0_1(decoder0_0_out)
-
-        # 2x downsampled prediction
-        pred_2x = self.prediction0(decoder0_1_out)
-        upsampled_pred_2x = F.interpolate(pred_2x.detach(), scale_factor=2)
-
-        # Second decoding block
-        decoder1_0_out = self.decoder1_0(decoder0_1_out)
-        decoder1_1_out = self.decoder1_1(decoder1_0_out)
-        decoder1_2_out = self.decoder1_2(
-            torch.cat((upsampled_pred_2x, decoder1_1_out), 1))
-
-        # Second prediction output (original scale)
-        pred_1x = self.prediction1(decoder1_2_out)
-
-        if self.cspn:
-            guidance0 = self.guid_decode(decoder0_1_out)
-            guidance1 = self.guid_conv_1(guidance0)
-            # guidance2 = self.guid_conv_2(guidance1)
-            opt_depth = self.cspn(
-                guidance=guidance1, blur_depth=pred_1x, sparse_depth=sparse_depth)
-            return [opt_depth, pred_1x, pred_2x]
-        else:
-            return [pred_1x, pred_2x]
-
-    def annotateOutput(self, outputs):
-        data = AnnotatedData()
-        data.add(outputs[0], DataType.Depth)
-
-        if self.cspn:
-            data.add(outputs[1], DataType.Depth, scale=1)
-            data.add(outputs[2], DataType.Depth, scale=2)
-        else:
-            data.add(outputs[1], DataType.Depth, scale=2)
-        return data
 # -----------------------------------------------------------------------------
 
 
@@ -1174,11 +1080,11 @@ class DoubleBranchNet(nn.Module):
 
 
 class FilterBlock(nn.Module):
-    def __init__(self, in_channels):
+    def __init__(self, in_channels, reflection_pad=False):
         super(FilterBlock, self).__init__()
         self.block = nn.Sequential(
-            ConvELUBlock(in_channels, 64, 5, padding=2),
-            ConvELUBlock(64, 32, 1, padding=0),
+            ConvELUBlock(in_channels, 64, 5, padding=2, reflection_pad=reflection_pad),
+            ConvELUBlock(64, 32, 1, padding=0, reflection_pad=reflection_pad),
             nn.Conv2d(32, 1, 3, padding=1)
         )
 
@@ -1453,9 +1359,8 @@ class PlanarToDepth(nn.Module):
         nan_count = (1 - torch.isfinite(planar_depths)).sum().item()
         if nan_count > 0:
             print("found # inifinst", nan_count)
-
-        planar_depths = torch.where(torch.isfinite(planar_depths),
-                                    planar_depths, torch.zeros_like(planar_depths))
+            planar_depths = torch.where(torch.isfinite(planar_depths),
+                                        planar_depths, torch.zeros_like(planar_depths))
         # assert(not torch.isnan(planar_depths).any())
         # assert torch.isfinite(planar_depths).all()
 
@@ -1483,8 +1388,8 @@ class PlanarToDepth(nn.Module):
         # seg = torch.sigmoid(segmentation)
         # seg = torch.sign(torch.sum(planes.detach(), dim=1, keepdim=True))
         # seg = torch.sign(planar_depths.detach())
-        # seg_planar = torch.sigmoid(segmentation)
-        # valid_pixels[seg_planar < 0.5] = 0
+        seg_planar = torch.sigmoid(segmentation)
+        valid_pixels[seg_planar < 0.5] = 0
 
         # assert(not torch.isnan(planar_depths).any())
         planar_depths = planar_depths * valid_pixels

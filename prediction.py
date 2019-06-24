@@ -47,7 +47,7 @@ def predict(experiment_name=None):
 
     model, _, parser, image_transformer, depth_transformer = setupPipeline(
         network_type=args.network_type, loss_type=None, add_points=args.add_points,
-        empty_points=args.empty_points)
+        empty_points=args.empty_points, args=args)
 
     network, _, device = setupGPUDevices(
         gpus_list=args.gpu_ids, model=model, criterion=None)

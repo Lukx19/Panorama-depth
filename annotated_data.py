@@ -20,29 +20,40 @@ class DataType(Enum):
     Guidance = 12
 
 
+class Annotation(Enum):
+    Default = 0
+    PlanarBranch = 1
+    NonPlanarBranch = 2
+
+
 class AnnotatedData:
     def __init__(self):
         self.filenames = []
         self._data = defaultdict(lambda: defaultdict(lambda: []))
 
-    def add(self, tensor, data_type, scale=1):
+    def add(self, tensor, data_type, scale=1, annotation=Annotation.Default):
         if type(scale) is not str:
             scale = str(scale)
-        self._data[data_type][scale].append(tensor)
+        self._data[data_type][scale].append((annotation, tensor))
         return self
 
-    def get(self, data_type, scale='1'):
+    def get(self, data_type, scale='1', annotation=Annotation.Default):
         """Returns list of tensors of selected type and scale """
         if type(scale) is not str:
             scale = str(scale)
-        return self._data[data_type][scale]
+        res = []
+        for sc, tensor in self.queryType(data_type, annotation):
+            if scale == sc:
+                res.append(tensor)
+        return res
 
-    def queryType(self, data_type):
+    def queryType(self, data_type, annotation=Annotation.Default):
         """Returns list of (scale,tensor) of selected type """
         res = []
         for scale, tensors in self._data[data_type].items():
-            for tensor in tensors:
-                res.append((scale, tensor))
+            for (annot_type, tensor) in tensors:
+                if annotation == annot_type:
+                    res.append((scale, tensor))
         return res
 
     def remove(self, type, scale=1):
@@ -54,8 +65,8 @@ class AnnotatedData:
         new_data.filenames = copy.deepcopy(self.filenames)
         for data_key, scale_dict in self._data.items():
             for scale_key, tensors in scale_dict.items():
-                for tensor in tensors:
-                    new_data.add(tensor.to(device), data_key, scale_key)
+                for (annotation, tensor) in tensors:
+                    new_data.add(tensor.to(device), data_key, scale_key, annotation)
         return new_data
 
     def cpu(self):

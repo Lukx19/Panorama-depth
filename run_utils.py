@@ -1,17 +1,19 @@
 import torch
 import torch.nn as nn
-from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet
+from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet, rectnet_ops
 from criteria import (GradLoss, MultiScaleL2Loss, NormSegLoss,
                       PlaneNormSegLoss, PlaneParamsLoss, CosineNormalsLoss,
-                      SphericalNormalsLoss)
+                      SphericalNormalsLoss, TwoBranchLoss)
 import argparse
 import dataset
+import json
+import copy
 from trainers import parse_data, genSparsePontsParser, genTotalLoss
 torch.backends.cudnn.enabled = True
 torch.backends.cudnn.benchmark = True
 
 
-def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales={}):
+def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales={}, args={}):
     in_channels = 3
     parser = parse_data
     if add_points:
@@ -21,6 +23,7 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
     rgb_transformer = dataset.default_transformer
     depth_transformer = dataset.default_depth_transformer
 
+    model_opts = parseModelOpts(args.model_opts, rectnet_ops)
     # UResNet
     if network_type == 'UResNet':
         model = UResNet(in_channels)
@@ -28,43 +31,49 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
         beta_list = [0.15, 0., 0.]
 
     elif network_type == 'RectNet':
-        model = RectNet(in_channels, cspn=False)
+        model = RectNet(in_channels, opts=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetSegNormals':
-        model = RectNet(in_channels, cspn=False, normal_est=True, segmentation_est=True)
+        model = RectNet(in_channels, normal_est=True,
+                        segmentation_est=True, opts=model_opts)
 
     elif network_type == 'RectNetSphereNormals':
-        model = RectNet(in_channels, cspn=False, normal_est=True,
-                        segmentation_est=True, normals_est_type="sphere")
+        model = RectNet(in_channels, normal_est=True,
+                        segmentation_est=True, normals_est_type="sphere", opts=model_opts)
     elif network_type == 'RectNetPlanes':
         torch.autograd.set_detect_anomaly(True)
-        model = RectNet(in_channels, cspn=False, normal_est=True,
+        model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=True,
-                        normals_est_type="standart")
+                        normals_est_type="standart", opts=model_opts)
     elif network_type == 'RectNetPlanesSphere':
         torch.autograd.set_detect_anomaly(True)
-        model = RectNet(in_channels, cspn=False, normal_est=True,
+        model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=True,
-                        normals_est_type="sphere")
+                        normals_est_type="sphere", opts=model_opts)
+    elif network_type == 'RectNetPlanes2xSphere':
+        torch.autograd.set_detect_anomaly(True)
+        model = RectNet(in_channels, normal_est=True,
+                        segmentation_est=True, calc_planes=True,
+                        normals_est_type="sphere", plane_type="downsampled", opts=model_opts)
     elif network_type == 'RectNetSmoothSphere':
         torch.autograd.set_detect_anomaly(True)
-        model = RectNet(in_channels, cspn=False, normal_est=True,
+        model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=False,
-                        normals_est_type="sphere", normal_smoothing=True)
+                        normals_est_type="sphere", normal_smoothing=True, opts=model_opts)
 
     elif network_type == 'RectNetSmooth':
         torch.autograd.set_detect_anomaly(True)
-        model = RectNet(in_channels, cspn=False, normal_est=True,
+        model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=False,
-                        normals_est_type="standart", normal_smoothing=True)
+                        normals_est_type="standart", normal_smoothing=True, opts=model_opts)
 
     elif network_type == 'RectNetPad':
-        model = RectNet(in_channels, cspn=False, reflection_pad=True)
+        model = RectNet(in_channels, opts=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetCSPN':
-        model = RectNetCSPN(in_channels, cspn=True)
+        model = RectNetCSPN(in_channels, opts=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == "DBNet":
@@ -106,6 +115,9 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
             # loss_scales["Plane_dist_plane_loss"] = 10.0
             # loss_scales["revis_l1_dist_1"] = 10.0
             # loss_scales["revis_l1_dist_2"] = 10.0
+        elif loss_type == "TwoBranchSphericalLoss":
+            normal_loss = SphericalNormalsLoss()
+            criterion = TwoBranchLoss(normal_loss=normal_loss)
         else:
             assert False, 'Unsupported loss type'
     return model, (criterion, genTotalLoss(loss_scales)), parser, rgb_transformer, depth_transformer
@@ -120,6 +132,16 @@ def parseLossScales(loss_str: str):
         loss_name, loss_value = tuple(loss.split(":"))
         loss_scales[loss_name.strip()] = float(loss_value.strip())
     return loss_scales
+
+
+def parseModelOpts(opts_str: str, opts={}):
+    if opts_str == "":
+        return opts
+    copy_opts = copy.deepcopy(opts)
+    parsed_opts = json.loads(opts_str)
+    for key, val in parsed_opts.items():
+        copy_opts[key] = val
+    return copy_opts
 
 
 def parseArgs(test=False, predict=False):
@@ -153,6 +175,9 @@ def parseArgs(test=False, predict=False):
     parser.add_argument('--gpu_ids', default='0,1', type=str,
                         help='Ids of GPU to use for training')
     parser.add_argument('--workers', default=4, type=int)
+
+    parser.add_argument('--model_opts', default='', type=str,
+                        help='JSON with model parameters')
 
     if test:
         parser.add_argument('--test_list', type=str,

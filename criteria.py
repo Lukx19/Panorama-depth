@@ -2,7 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from annotated_data import DataType
+from annotated_data import DataType, Annotation
 from network import planeAwarePooling, toPlaneParams, signToLabel, DepthToNormals
 from modules import Depth2Points
 from util import mergeInDict
@@ -344,22 +344,26 @@ class GradLoss(nn.Module):
         if self.depth_normals:
             self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
-    def forward(self, predictions, data):
+    def forward(self, predictions, data, annotation=Annotation.Default):
         losses = {}
         histograms = {}
-        for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
+        for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth,
+                                                                annotation=annotation)):
             gt = data.get(DataType.Depth, scale=scale)[0]
             mask = data.get(DataType.Mask, scale=scale)[0]
             if i == 0 or self.all_levels:
                 revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel, self.adaptive)
                 for key, loss in revis_losses.items():
-                    losses[key + "_s" + str(scale) + "_" + str(i)] = loss
+                    key_id = key + "_" + str(annotation) + "_s" + str(scale) + "_" + str(i)
+                    losses[key_id] = loss
 
                 for key, hist in revis_hist.items():
-                    histograms[key + "_s" + str(scale) + "_" + str(i)] = hist
+                    key_id = key + "_" + str(annotation) + "_s" + str(scale) + "_" + str(i)
+                    histograms[key_id] = hist
             else:
                 l2_loss = self.l2_loss(pred, gt, mask)
-                losses["revis_l2" + "_s" + str(scale) + "_" + str(i)] = l2_loss
+                key_id = "revis_l2" + "_" + str(annotation) + "_s" + str(scale) + "_" + str(i)
+                losses[key_id] = l2_loss
 
         if self.depth_normals:
             l, h = self.depth_cosine_loss(predictions, data)
@@ -498,14 +502,10 @@ class CosineDepthNormalsLoss(nn.Module):
         return losses, histograms
 
 
-class PlaneNormSegLoss(nn.Module):
-    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
-        super(PlaneNormSegLoss, self).__init__()
+class PlanarLoss(nn.Module):
+    def __init__(self, width=512, height=256):
+        super(PlanarLoss, self).__init__()
         self.to3d = Depth2Points(height, width)
-        # self.sobel = Sobel()
-        self.normal_loss = normal_loss
-        self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
-        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -514,41 +514,20 @@ class PlaneNormSegLoss(nn.Module):
         norm = norm + torch.ones_like(norm) * mask.float()
         return avg_plane_normal / norm
 
-    def forward(self, predictions, data):
-        # losses = {}
-        # histograms = {}
+    def forward(self, predictions, data, pred_depth):
+        losses = {}
+        histograms = {}
+
         planes = data.get(DataType.Planes, scale=1)[0]
         # 1= pixels where are some planes 0 = otherwise
         plane_mask = torch.sign(torch.sum(planes, dim=1))
-        losses, histograms = self.grad_loss(predictions, data)
-
-        # l, h = self.depth_cosine_loss(predictions, data)
-        # losses = mergeInDict(losses, l)
-        # histograms = mergeInDict(histograms, h)
-
-        # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
-        #     gt = data.get(DataType.Depth, scale=scale)[0]
-        #     mask = data.get(DataType.Mask, scale=scale)[0]
-        #     revis_losses, revis_hist = revisLoss(pred, gt, mask, self.sobel)
-        #     for key, loss in revis_losses.items():
-        #         losses[key + "_" + str(scale)] = loss
-
-        #     for key, hist in revis_hist.items():
-        #         histograms[key + "_" + str(scale)] = hist
-
         mask = data.get(DataType.Mask, scale=1)[0]
 
-        gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
-        pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
-        pred_depth = predictions.get(DataType.Depth, scale=1)[0]
         gt_depth = data.get(DataType.Depth, scale=1)[0] * mask
         gt_normals = data.get(DataType.Normals)[0] * mask
         pred_normals = predictions.get(DataType.Normals)[0] * mask
         # print(torch.sum(plane_mask), torch.sum(gt_seg), torch.sum(mask))
         b, ch, h, w = pred_normals.size()
-
-        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
-        losses["Segmentation_Loss"] = seg_total_loss
 
         # validMean = createValidMean(plane_mask)
         planeMean = createPlaneMean(mask, planes)
@@ -594,15 +573,81 @@ class PlaneNormSegLoss(nn.Module):
         # histograms["Plane_normal_loss"] = similarity_planar.detach()
         losses["Plane_normal_loss"] = torch.mean(similarity_planar)
 
-        # distance_pred_planes = planes_ext * (gt_points - pred_points)
+        return losses, histograms
 
-        # distance_pred_planes = distance_pred_planes * torch.reshape(avg_pred_normal, (b, p, 3, 1))
-        # distance_pred_planes = torch.sum(distance_pred_planes, dim=2)
-        # print(distance_pred_planes)
+
+class PlaneNormSegLoss(nn.Module):
+    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
+        super(PlaneNormSegLoss, self).__init__()
+
+        self.normal_loss = normal_loss
+        self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
+        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
+        self.planar_loss = PlanarLoss(width, height)
+
+    def forward(self, predictions, data):
+        losses, histograms = self.grad_loss(predictions, data)
+
+        mask = data.get(DataType.Mask, scale=1)[0]
+        gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
+        pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
+        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+        losses["Segmentation_Loss"] = seg_total_loss
+
+        # l, h = self.depth_cosine_loss(predictions, data)
+        # losses = mergeInDict(losses, l)
+        # histograms = mergeInDict(histograms, h)
+
         # planeMean = createValidMean(plane_mask)
         # distance_loss_plane = l2Loss(-distance_pred_planes,
         #                              torch.zeros_like(distance_pred_planes), planeMean)
         l, h = self.normal_loss(predictions, data)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
+
+        pred_depth = predictions.get(DataType.Depth, scale=1)[0]
+        l, h = self.planar_loss(predictions, data, pred_depth)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
+
+        return losses, histograms
+
+
+class TwoBranchLoss(nn.Module):
+    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
+        super(TwoBranchLoss, self).__init__()
+
+        self.normal_loss = normal_loss
+        self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
+        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
+        self.planar_loss = PlanarLoss(width, height)
+
+    def forward(self, predictions, data):
+        losses, histograms = self.grad_loss(predictions, data, Annotation.NonPlanarBranch)
+
+        l, h = self.grad_loss(predictions, data)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
+
+        mask = data.get(DataType.Mask, scale=1)[0]
+        gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
+        pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
+        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+        losses["Segmentation_Loss"] = seg_total_loss
+
+        # l, h = self.depth_cosine_loss(predictions, data)
+        # losses = mergeInDict(losses, l)
+        # histograms = mergeInDict(histograms, h)
+
+        # planeMean = createValidMean(plane_mask)
+        # distance_loss_plane = l2Loss(-distance_pred_planes,
+        #                              torch.zeros_like(distance_pred_planes), planeMean)
+        l, h = self.normal_loss(predictions, data)
+        losses = mergeInDict(losses, l)
+        histograms = mergeInDict(histograms, h)
+
+        pred_depth = predictions.get(DataType.Depth, scale=1, annotation=Annotation.Default)[0]
+        l, h = self.planar_loss(predictions, data, pred_depth)
         losses = mergeInDict(losses, l)
         histograms = mergeInDict(histograms, h)
 

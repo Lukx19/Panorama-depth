@@ -22,12 +22,12 @@ with open(osp.join(checkpoint_dir, 'commandline_args.txt'), 'w') as f:
     print(json.dumps(args.__dict__, indent=2))
 
 validation_freq = 1
-visualization_freq = 50
+visualization_freq = 200
 validation_sample_freq = -1
 
 loss_scales = parseLossScales(args.loss_scales)
 model, (criterion, loss_sum_fce), parser, image_transformer, depth_transformer = setupPipeline(
-    args.network_type, args.loss_type, args.add_points, args.empty_points, loss_scales)
+    args.network_type, args.loss_type, args.add_points, args.empty_points, loss_scales, args)
 
 network, criterion, device = setupGPUDevices(
     gpus_list=args.gpu_ids, model=model, criterion=criterion)

@@ -35,7 +35,8 @@ class Depth2Points(nn.Module):
 
 
 class SmoothConv(nn.Module):
-    def __init__(self, kernel_size, dilation=1, padding=0, iterations=1):
+    def __init__(self, kernel_size, dilation=1, padding=0, iterations=1,
+                 sigma_c_mult=0.2, sigma_n=1 / 3):
         super(SmoothConv, self).__init__()
         if type(kernel_size) is int:
             self.kernel_size = (kernel_size, kernel_size)
@@ -45,11 +46,13 @@ class SmoothConv(nn.Module):
         self.unfold = torch.nn.Unfold(kernel_size=kernel_size, dilation=dilation,
                                       padding=padding, stride=1)
         self.iterations = iterations
+        self.sigma_c_mult = sigma_c_mult
+        self.sigma_n = sigma_n
 
     def normalDist(self, x, sigma):
         return torch.exp((-x**2) / (2 * sigma**2))
 
-    def forward(self, points, normals, segmentation=None):
+    def forward(self, points, normals, segmentation=None, mask=None):
         _, _, height, width = points.size()
         if segmentation is None:
             combined_data = torch.cat((points, normals.clone()), dim=1)
@@ -76,12 +79,11 @@ class SmoothConv(nn.Module):
         pts_norm = torch.norm(points_diff, p=2, dim=2, keepdim=True)
         sigma_c, _ = torch.max(pts_norm, dim=3, keepdim=True)
         # print(pts_norm.size(), sigma_c.size())
-        sigma_c = sigma_c / 5 + 1e-5
+        sigma_c = sigma_c * self.sigma_c_mult + 1e-5
         W_p = self.normalDist(pts_norm, sigma_c)
 
-        sigma_s = 1.0 / 3.0
         cos_angles = torch.sum(normals_i * normals_ker, dim=2, keepdim=True)
-        W_n = self.normalDist(1 - cos_angles, sigma_s)
+        W_n = self.normalDist(1 - cos_angles, self.sigma_n)
         if segmentation is None:
             weight = W_n * W_p
         else:
@@ -90,7 +92,7 @@ class SmoothConv(nn.Module):
         # weight = W_c
         weight = weight.clone().detach()
         normalization = torch.sum(weight.clone(), dim=3)
-        mask = torch.sign(torch.abs(pts_i))
+        # mask = torch.sign(torch.abs(pts_i))
         # print(weight.size())
         for it in range(self.iterations):
             points_diff = pts_ker - pts_i
@@ -101,12 +103,14 @@ class SmoothConv(nn.Module):
         # print(improvement.size())
             improvement = improvement.permute(0, 2, 1)
             improvement = torch.reshape(improvement, (b, 3, height, width))
+            if mask is not None:
+                improvement = improvement * mask
 
             if self.iterations > 1:
                 unfolded_imp = self.unfold(improvement)
                 unfolded_imp = torch.transpose(unfolded_imp, dim0=1, dim1=2)
                 unfolded_imp = torch.reshape(unfolded_imp, (b, k, -1, Kh * Kw))
-                pts_ker = (pts_ker + unfolded_imp) * mask
+                pts_ker = (pts_ker + unfolded_imp)
                 pts_i = pts_ker[:, :, :, kernel_mid:kernel_mid + 1]
 
         if self.iterations == 1:
