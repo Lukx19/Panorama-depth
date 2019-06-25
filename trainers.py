@@ -747,7 +747,7 @@ class MonoTrainer(object):
         for key, tracker in self.err_trackers.items():
             traces.append((key, tracker.x, tracker.y, tracker.std))
         graph = linePlot(traces)
-        py.io.write_json(graph, osp.join(res_folder, "errors.json"))
+        py.io.write_json(graph, osp.join(res_folder, "errors.plotly"))
         # with open(osp.join(res_folder, "errors.json"), mode="w") as f:
         #     f.write(json.dumps(graph))
 
@@ -760,7 +760,7 @@ class MonoTrainer(object):
         for key, tracker in self.acc_trackers.items():
             traces.append((key, tracker.x, tracker.y, tracker.std))
         graph = linePlot(traces)
-        py.io.write_json(graph, osp.join(res_folder, "acc.json"))
+        py.io.write_json(graph, osp.join(res_folder, "acc.plotly"))
         # with open(osp.join(res_folder, "acc.json"), mode="w") as f:
         #     f.write(json.dumps(graph))
 
@@ -870,7 +870,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
             max_val = 8.0
         # print(key)
         graph = imageHeatmap(rgb, hist[0].cpu().squeeze().flip(0), title=key, max_val=max_val)
-        file = osp.join(data_folder, key + '_hist.json')
+        file = osp.join(data_folder, key + '_hist.plotly')
         py.io.write_json(graph, file)
 
         if save_to_disk:
@@ -881,7 +881,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     for i, (scale, guidance) in enumerate(output.queryType(DataType.Guidance)):
         key = "guidance_" + str(i)
         graph = imageHeatmap(rgb, guidance[0].cpu().squeeze().flip(0), title=key, max_val=None)
-        file = osp.join(data_folder, key + '.json')
+        file = osp.join(data_folder, key + '.plotly')
         py.io.write_json(graph, file)
 
         if save_to_disk:
@@ -907,7 +907,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
                 caption='Mask'))
 
     depth_fig = heatmapGrid([gt_depth, pred_depth], ["Gt depth", "Pred depth"], columns=1)
-    file = osp.join(data_folder, 'depths.json')
+    file = osp.join(data_folder, 'depths.plotly')
     py.io.write_json(depth_fig, file)
 
     if save_to_disk:
@@ -1071,7 +1071,7 @@ def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
         graph = linePlot([(key, tracker.x, tracker.y, None)])
 
         if save_to_disk:
-            file = osp.join(data_folder, key_name + '.json')
+            file = osp.join(data_folder, key_name + '.plotly')
             py.io.write_json(graph, file)
             py.io.write_image(graph, osp.join(data_folder, key_name + '.png'))
         if visdom is not None:
