@@ -493,7 +493,9 @@ class RectNet(nn.Module):
             # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
         if self.calc_merge_guidance:
-            self.guidance = nn.Conv2d(64, 1, 3, padding=1)
+            self.guidance = ConvELUBlock(64, 1, 3, padding=1, reflection_pad=reflection_pad)
+            self.guidance2 = nn.Conv2d(2, 1, 3, padding=1)
+
         self.apply(xavier_init)
 
     def forward(self, inputs):
@@ -661,9 +663,12 @@ class RectNet(nn.Module):
         merge_seg = None
         if self.calc_merge_guidance:
             if self.ops["guided_merge"]:
+                outputs["guidance"] = []
                 merge = self.guidance(decoder1_2_out)
+                outputs["guidance"].append(merge.clone().detach())
+                merge = self.guidance2(torch.cat((merge, pred_seg), dim=1))
                 merge_seg = torch.sigmoid(merge)
-                outputs["guidance"] = [merge_seg.clone().detach()]
+                outputs["guidance"].append(merge_seg.clone().detach())
             else:
                 merge_seg = torch.sigmoid(pred_seg)
                 merge_seg = torch.where(merge_seg > 0.5, torch.ones_like(merge_seg),
