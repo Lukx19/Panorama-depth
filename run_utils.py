@@ -1,6 +1,6 @@
 import torch
 import torch.nn as nn
-from network import UResNet, RectNet, RectNetCSPN, DoubleBranchNet, rectnet_ops
+from network import UResNet, RectNet, DoubleBranchNet, rectnet_ops
 from criteria import (GradLoss, MultiScaleL2Loss, NormSegLoss,
                       PlaneNormSegLoss, PlaneParamsLoss, CosineNormalsLoss,
                       SphericalNormalsLoss, TwoBranchLoss)
@@ -31,49 +31,50 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
         beta_list = [0.15, 0., 0.]
 
     elif network_type == 'RectNet':
-        model = RectNet(in_channels, opts=model_opts)
+        model = RectNet(in_channels, ops=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetSegNormals':
         model = RectNet(in_channels, normal_est=True,
-                        segmentation_est=True, opts=model_opts)
+                        segmentation_est=True, ops=model_opts)
 
     elif network_type == 'RectNetSphereNormals':
         model = RectNet(in_channels, normal_est=True,
-                        segmentation_est=True, normals_est_type="sphere", opts=model_opts)
+                        segmentation_est=True, normals_est_type="sphere", ops=model_opts)
     elif network_type == 'RectNetPlanes':
         torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=True,
-                        normals_est_type="standart", opts=model_opts)
+                        normals_est_type="standart", ops=model_opts)
     elif network_type == 'RectNetPlanesSphere':
         torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=True,
-                        normals_est_type="sphere", opts=model_opts)
+                        normals_est_type="sphere", ops=model_opts)
     elif network_type == 'RectNetPlanes2xSphere':
         torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=True,
-                        normals_est_type="sphere", plane_type="downsampled", opts=model_opts)
+                        normals_est_type="sphere", plane_type="downsampled", ops=model_opts)
     elif network_type == 'RectNetSmoothSphere':
         torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=False,
-                        normals_est_type="sphere", normal_smoothing=True, opts=model_opts)
+                        normals_est_type="sphere", normal_smoothing=True, ops=model_opts)
 
     elif network_type == 'RectNetSmooth':
         torch.autograd.set_detect_anomaly(True)
         model = RectNet(in_channels, normal_est=True,
                         segmentation_est=True, calc_planes=False,
-                        normals_est_type="standart", normal_smoothing=True, opts=model_opts)
+                        normals_est_type="standart", normal_smoothing=True, ops=model_opts)
 
     elif network_type == 'RectNetPad':
-        model = RectNet(in_channels, opts=model_opts)
+        model = RectNet(in_channels, ops=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == 'RectNetCSPN':
-        model = RectNetCSPN(in_channels, opts=model_opts)
+        model_opts["cspn"] = True
+        model = RectNet(in_channels, ops=model_opts)
         alpha_list = [0.535, 0.272]
         beta_list = [0.134, 0.068, ]
     elif network_type == "DBNet":
@@ -81,6 +82,7 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
     else:
         assert False, 'Unsupported network type'
 
+    print(json.dumps(model_opts))
     criterion = None
     if loss_type is not None:
         if loss_type == "MultiScale":

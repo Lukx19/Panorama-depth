@@ -313,6 +313,7 @@ rectnet_ops = {
     "cspn": False,
     "sigma_c_mult": [0.4, 0.4, 0.2],
     "sigma_n": [1 / 3, 1 / 3, 1 / 3],
+    "guided_merge": True,
 }
 
 
@@ -326,7 +327,7 @@ class RectNet(nn.Module):
         self.height = 256
         self.width = 512
         self.ops = ops
-        reflection_pad = self.ops.reflection_pad
+        reflection_pad = self.ops["reflection_pad"]
         # Network definition
         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(
             1, 4), reflection_pad=reflection_pad)
@@ -391,7 +392,7 @@ class RectNet(nn.Module):
 
         self.prediction1 = nn.Conv2d(64, 1, 3, padding=1)
 
-        self.cspn = self.ops.cspn
+        self.cspn = self.ops["cspn"]
         if self.cspn:
             self.guidance = ConvELUBlock(
                 64, 8, 3, padding=1, reflection_pad=reflection_pad)
@@ -659,14 +660,16 @@ class RectNet(nn.Module):
 
         merge_seg = None
         if self.calc_merge_guidance:
-            merge = self.guidance(decoder1_2_out)
-            merge_seg = torch.sigmoid(merge)
-            outputs["guidance"] = [merge_seg.clone().detach()]
+            if self.ops["guided_merge"]:
+                merge = self.guidance(decoder1_2_out)
+                merge_seg = torch.sigmoid(merge)
+                outputs["guidance"] = [merge_seg.clone().detach()]
+            else:
+                merge_seg = torch.sigmoid(pred_seg)
+                merge_seg = torch.where(merge_seg > 0.5, torch.ones_like(merge_seg),
+                                        torch.zeros_like(merge_seg))
 
-            # planar_seg = torch.sigmoid(pred_seg)
             # nonplanar_seg = 1 - planar_seg
-            # hard_seg = torch.where(pred_seg > 0.5, torch.ones_like(pred_seg),
-            #                        torch.zeros_like(pred_seg))
             # outputs["depth_planar"] = upsampled_planar_depth * merge_seg
             planar_depth = upsampled_planar_depth * merge_seg
             # outputs["depth_nonplanar"] = opt_depth * (1 - merge_seg)
