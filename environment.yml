@@ -11,6 +11,8 @@ dependencies:
   - cudatoolkit=9.0
   - numpy
   - python=3.7.2
+  - zlib
+  - zstd
   - pandas
   - open3d
   - opencv
