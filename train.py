@@ -51,7 +51,7 @@ train_dataloader = torch.utils.data.DataLoader(
     ),
     batch_size=args.batch_size,
     shuffle=True,
-    pin_memory=True,
+    pin_memory=False,
     num_workers=args.workers,
     drop_last=True)
 
@@ -67,7 +67,7 @@ val_dataloader = torch.utils.data.DataLoader(
     ),
     batch_size=1,
     shuffle=False,
-    pin_memory=True,
+    pin_memory=False,
     num_workers=args.workers,
     drop_last=False)
 

@@ -583,8 +583,8 @@ class MonoTrainer(object):
             # self.initialize_visualizations()
             # make sure that validation is correct without bugs
 
-        # self.validate()
-        # self.visualize_metrics()
+        self.validate()
+        self.visualize_metrics(save_to_disk=False)
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -604,7 +604,7 @@ class MonoTrainer(object):
                     self.best_d1_inlier = self.acc_meters["Inlier D1"].avg
                     is_best = True
                 self.save_checkpoint(is_best)
-                self.visualize_metrics()
+                self.visualize_metrics(save_to_disk=False)
 
     def reset_eval_metrics(self):
         '''
@@ -729,7 +729,7 @@ class MonoTrainer(object):
         else:
             print('WARNING: No checkpoint found')
 
-    def visualize_metrics(self):
+    def visualize_metrics(self, save_to_disk):
         '''
         Updates the metrics visualization
         '''
@@ -751,7 +751,7 @@ class MonoTrainer(object):
         # with open(osp.join(res_folder, "errors.json"), mode="w") as f:
         #     f.write(json.dumps(graph))
 
-        if self.save_to_disk:
+        if save_to_disk:
             py.io.write_image(graph, osp.join(res_folder, "errors.png"))
         if self.vis is not None:
             self.vis[0].plotlyplot(graph, win="error_metrics", env=self.vis[1])
@@ -764,7 +764,7 @@ class MonoTrainer(object):
         # with open(osp.join(res_folder, "acc.json"), mode="w") as f:
         #     f.write(json.dumps(graph))
 
-        if self.save_to_disk:
+        if save_to_disk:
             py.io.write_image(graph, osp.join(res_folder, "acc.png"))
         if self.vis is not None:
             self.vis[0].plotlyplot(graph, win="inlier_metrics", env=self.vis[1])
@@ -1034,7 +1034,8 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pcl_gt = panoDepthToPcl(gt_depth, rgb)
     savePcl(pcl_gt[0], pcl_gt[1], osp.join(data_folder, 'pcl_gt_cloud.ply'))
 
-    normals = np.reshape(pred_normals, (-1, 3))
+    if pred_normals is not None:
+        normals = np.reshape(pred_normals, (-1, 3))
     color = np.reshape(rgb, (-1, 3))
     for i, pts in enumerate(output.get(DataType.Points3d)):
         pts = pts[0].cpu().permute(1, 2, 0).numpy()
