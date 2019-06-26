@@ -249,7 +249,7 @@ class MultiScaleL2Loss(nn.Module):
     def forward(self, predictions, data):
 
         # Go through each scale and accumulate errors
-        depth_error = 0
+        depth_errors = {}
         for i, (scale, depth_pred) in enumerate(predictions.queryType(DataType.Depth)):
 
             depth_gt = data.get(DataType.Depth, scale=scale)[0]
@@ -258,17 +258,17 @@ class MultiScaleL2Loss(nn.Module):
             beta = self.beta_list[i]
 
             # Compute depth error at this scale
-            depth_error += alpha * self.depth_metric(
+            depth_errors[f"depth_err_s{scale}_{i}"] = alpha * self.depth_metric(
                 depth_pred,
                 depth_gt,
                 mask)
 
             # Compute gradient error at this scale
-            depth_error += beta * self.grad_metric(
+            depth_errors[f"grad_err_s{scale}_{i}"] = beta * self.grad_metric(
                 depth_pred,
                 mask)
 
-        return depth_error
+        return depth_errors, {}
 
 
 def revisLoss(pred, gt, mask, sobel, adaptive=False):
