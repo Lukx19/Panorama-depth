@@ -426,7 +426,7 @@ def pytorchDetachedProcess(func):
     return funcWrapper
 
 
-def linePlot(traces):
+def linePlot(traces, title):
     """Plot multiple traces into one graph
 
     Parameters
@@ -453,7 +453,7 @@ def linePlot(traces):
             )
         data.append(go.Scatter(**ops))
     layout = dict(
-        title=name,
+        title=title,
     )
     return {'data': data, 'layout': layout}
 

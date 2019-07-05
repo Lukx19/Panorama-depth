@@ -31,9 +31,9 @@ def log_rms_sq_error(pred, gt, mask):
     return torch.sqrt(((pred[mask].log() - gt[mask].log()) ** 2).mean())
 
 
-def delta_inlier_ratio(pred, gt, mask, degree=1):
+def delta_inlier_ratio(pred, gt, mask, degree=1, base=1.25):
     '''Compute the delta inlier rate to a specified degree (def: 1)'''
-    return (torch.max(pred[mask > 0] / gt[mask > 0], gt[mask > 0] / pred[mask > 0]) < (1.25 ** degree)).float().mean()
+    return (torch.max(pred[mask > 0] / gt[mask > 0], gt[mask > 0] / pred[mask > 0]) < (base ** degree)).float().mean()
 
 
 def delta_normal_angle_ratio(pred, gt, mask, degree=11.25):
@@ -42,17 +42,18 @@ def delta_normal_angle_ratio(pred, gt, mask, degree=11.25):
     val = torch.squeeze(val)
     val = val[mask > 0]
     tresh = np.cos(degree * np.pi / 180)
-    return (val < tresh).float().mean()
+    # cos(0) = 1 and cos(1) = 0
+    return (val > tresh).float().mean()
 
 
 def normal_stats(pred, gt, mask):
     b, c, h, w = mask.size()
     assert b == 1
     mask = torch.reshape(mask, (1, h, w))
-    val = torch.nn.functional.cosine_similarity(pred, gt)[mask > 0]
+    val = torch.nn.functional.cosine_similarity(pred, gt, dim=1)[mask > 0]
     to_deg = 180 / np.pi
-    mean = val.mean()
-    median = val.median()
+    mean = torch.acos(torch.mean(val))
+    median = torch.acos(torch.median(val))
     return mean * to_deg, median * to_deg
 
 
@@ -135,6 +136,27 @@ def planarity_errors(pred, gt_normals, planes, mask):
     return pe_flat, orient_err
 
 
+def distance_to_plane(pred_pts, gt_pts, gt_normals, planes):
+    b, p = planes.size()[0:2]
+    planes = torch.reshape(planes, (b, p, -1))
+    # B x P x 1
+    valid_per_plane = torch.sum(planes.detach(), dim=2, keepdim=True)
+
+    # #  avoid division by 0
+    valid_per_plane[valid_per_plane < 0.0001] = 1
+
+    distance = (pred_pts - gt_pts) * gt_normals
+    distace_to_gt_plane = (torch.sum(distance, dim=1))
+    distace_to_gt_plane = torch.abs(distace_to_gt_plane)
+    distace_to_gt_plane = torch.reshape(distace_to_gt_plane, (b, 1, -1))
+    planar_val = planes * distace_to_gt_plane
+    val = planar_val
+    val = torch.sqrt(((val ** 2).mean()))
+    # val = torch.sum(planar_val, dim=1, keepdim=True) / valid_per_plane
+    val = torch.mean(val)
+    return val
+
+
 """
 Original code modified to work with pytorch
 
@@ -163,6 +185,12 @@ def directed_depth_error(pred, gt, mask, thr):
     dde_p = torch.sum(diff == -1) / n_pixels
 
     return dde_0, dde_m, dde_p
+
+
+def direct_depth_accuracy(pred, gt, mask, thr):
+    val = torch.abs(gt - pred)[mask > 0]
+    val = (val < thr).float().mean()
+    return val
 
 
 def depth_boundary_error(pred, gt, mask):

@@ -5,13 +5,13 @@ from tqdm import tqdm
 import shutil
 import os.path as osp
 import os
-
+from collections import defaultdict
 import util
 from metrics import (abs_rel_error, delta_inlier_ratio,
                      lin_rms_sq_error, log_rms_sq_error,
                      sq_rel_error, directed_depth_error,
                      depth_boundary_error, planarity_errors,
-                     delta_normal_angle_ratio, normal_stats)
+                     delta_normal_angle_ratio, normal_stats, distance_to_plane, direct_depth_accuracy)
 
 from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
                   stackVerticaly, heatmapGrid, pytorchDetachedProcess, linePlot)
@@ -25,6 +25,8 @@ import numpy as np
 import json
 import plotly as py
 from visualizations import panoDepthToPcl, savePcl
+from modules import Depth2Points
+
 # From https://github.com/fyu/drn
 
 
@@ -336,58 +338,96 @@ class MonoTrainer(object):
         # Directory to store checkpoints
         self.checkpoint_dir = checkpoint_dir
 
-        # Accuracy metric trackers
-        self.err_meters = {
+        self.to3d = Depth2Points(256, 512)
+        self.meters = {}
+        self.meters["Basic"] = {
             'Abs. Rel. Error': AverageMeter(),
             'Sq. Rel. Error': AverageMeter(),
             'Linear RMS Error': AverageMeter(),
             'Log RMS Error': AverageMeter(),
             "Sparse Pts. Abs Rel": AverageMeter(),
-            "Direct Depth M Err": AverageMeter(),
-            "Direct Depth P Err": AverageMeter(),
-            "Direct Depth 0 Err": AverageMeter(),
-            "Depth Boundary Err": AverageMeter(),
+        }
+        self.meters["Normals"] = {
             "Normal Mean": AverageMeter(),
             "Normal Median": AverageMeter(),
-            "Plane Flatness Err": AverageMeter(),
-            "Plane Orientation Err": AverageMeter(),
         }
-
-        self.acc_meters = {
+        self.meters["Plane"] = {
+            "Plane distance": AverageMeter(),
+        }
+        # self.meters["Other"] = {
+        #     "Direct Depth M Err": AverageMeter(),
+        #     "Direct Depth P Err": AverageMeter(),
+        #     "Direct Depth 0 Err": AverageMeter(),
+        #     "Depth Boundary Err": AverageMeter(),
+        #     "Plane Flatness Err": AverageMeter(),
+        #     "Plane Orientation Err": AverageMeter(),
+        # }
+        self.meters["Direct_Acc"] = {
+            "Direct Depth 0.2": AverageMeter(),
+            "Direct Depth Plane 0.2": AverageMeter(),
+            "Direct Depth 0.4": AverageMeter(),
+        }
+        self.meters["Acc_Depth"] = {
+            "Inlier D0": AverageMeter(),
+            "Inlier D0 plane": AverageMeter(),
             "Inlier D1": AverageMeter(),
             "Inlier D2": AverageMeter(),
             "Inlier D3": AverageMeter(),
-            "Depth Boundary Acc": AverageMeter(),
+        }
+        self.meters["Acc_Normals"] = {
             "Normal Angle 11.25": AverageMeter(),
             "Normal Angle 22.5": AverageMeter(),
             "Normal Angle 30": AverageMeter(),
         }
-        # over multiple steps tracker
-        self.err_trackers = {
+        # self.meters["Acc_Other"] = {
+        #     "Depth Boundary Acc": AverageMeter(),
+        # }
+
+        self.trackers = {}
+        self.trackers["Basic"] = {
             'Abs. Rel. Error': SeriesData(),
             'Sq. Rel. Error': SeriesData(),
             'Linear RMS Error': SeriesData(),
             'Log RMS Error': SeriesData(),
             "Sparse Pts. Abs Rel": SeriesData(),
-            "Direct Depth M Err": SeriesData(),
-            "Direct Depth P Err": SeriesData(),
-            "Direct Depth 0 Err": SeriesData(),
-            "Depth Boundary Err": SeriesData(),
-            "Normal Mean": SeriesData(),
-            "Normal Median": SeriesData(),
-            "Plane Flatness Err": SeriesData(),
-            "Plane Orientation Err": SeriesData(),
         }
 
-        self.acc_trackers = {
+        self.trackers["Direct_Acc"] = {
+            "Direct Depth 0.2": SeriesData(),
+            "Direct Depth Plane 0.2": SeriesData(),
+            "Direct Depth 0.4": SeriesData(),
+        }
+
+        self.trackers["Normals"] = {
+            "Normal Mean": SeriesData(),
+            "Normal Median": SeriesData(),
+        }
+        self.trackers["Plane"] = {
+            "Plane distance": SeriesData(),
+        }
+        # self.trackers["Other"] = {
+        #     "Direct Depth M Err": SeriesData(),
+        #     "Direct Depth P Err": SeriesData(),
+        #     "Direct Depth 0 Err": SeriesData(),
+        #     "Depth Boundary Err": SeriesData(),
+        #     "Plane Flatness Err": SeriesData(),
+        #     "Plane Orientation Err": SeriesData(),
+        # }
+        self.trackers["Acc_Depth"] = {
+            "Inlier D0": SeriesData(),
+            "Inlier D0 plane": SeriesData(),
             "Inlier D1": SeriesData(),
             "Inlier D2": SeriesData(),
             "Inlier D3": SeriesData(),
-            "Depth Boundary Acc": SeriesData(),
+        }
+        self.trackers["Acc_Normals"] = {
             "Normal Angle 11.25": SeriesData(),
             "Normal Angle 22.5": SeriesData(),
             "Normal Angle 30": SeriesData(),
         }
+        # self.trackers["Acc_Other"] = {
+        #     "Depth Boundary Acc": SeriesData(),
+        # }
 
         # Track the best inlier ratio recorded so far
         self.best_d1_inlier = 0.0
@@ -533,7 +573,7 @@ class MonoTrainer(object):
 
         # Reset meter
         self.reset_eval_metrics()
-
+        d1_acc_files = []
         # Load data
         s = time.time()
         with torch.no_grad():
@@ -550,7 +590,8 @@ class MonoTrainer(object):
 
                 # Compute the evaluation metrics
                 if calc_metrics:
-                    self.compute_eval_metrics(output, data)
+                    d1 = self.compute_eval_metrics(output, data)
+                    d1_acc_files.append((d1, raw_data[1][0]))
                 if save_all_predictions:
                     self.save_samples(data, output, self.checkpoint_dir)
                 else:
@@ -566,10 +607,10 @@ class MonoTrainer(object):
         report = self.print_validation_report()
         with open(osp.join(self.checkpoint_dir, "validation_res.txt"), mode="a") as f:
             f.write("\n\n Epoch {} \n".format(self.epoch + 1))
-            f.write(report)
+            f.write(json.dumps(report, indent=2))
 
         self.network = self.network.train()
-        return report
+        return report, d1_acc_files
 
     def train(self, checkpoint_path=None, weights_only=False):
 
@@ -600,8 +641,8 @@ class MonoTrainer(object):
                 is_best = False
                 self.validate()
                 # Also update the best state tracker
-                if self.best_d1_inlier < self.acc_meters["Inlier D1"].avg:
-                    self.best_d1_inlier = self.acc_meters["Inlier D1"].avg
+                if self.best_d1_inlier < self.meters["Acc_Depth"]["Inlier D1"].avg:
+                    self.best_d1_inlier = self.meters["Acc_Depth"]["Inlier D1"].avg
                     is_best = True
                 self.save_checkpoint(is_best)
                 self.visualize_metrics(save_to_disk=False)
@@ -610,10 +651,9 @@ class MonoTrainer(object):
         '''
         Resets metrics used to evaluate the model
         '''
-        for key, metric in self.err_meters.items():
-            metric.reset()
-        for key, metric in self.acc_meters.items():
-            metric.reset()
+        for key, category in self.meters.items():
+            for key2, metric in category.items():
+                metric.reset()
 
     def compute_eval_metrics(self, output, data):
         '''
@@ -633,6 +673,10 @@ class MonoTrainer(object):
 
         N = depth_mask.sum().item()
 
+        plane_mask = None
+        if len(gt_planes) > 0:
+            plane_mask = torch.sign(torch.sum(gt_planes[0], dim=1, keepdim=True))
+
         # Align the prediction scales via median
         median_scaling_factor = gt_depth[depth_mask > 0].median(
         ) / depth_pred[depth_mask > 0].median()
@@ -642,56 +686,82 @@ class MonoTrainer(object):
         sq_rel = sq_rel_error(depth_pred, gt_depth, depth_mask)
         rms_sq_lin = lin_rms_sq_error(depth_pred, gt_depth, depth_mask)
         rms_sq_log = log_rms_sq_error(depth_pred, gt_depth, depth_mask)
-        d1 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=1)
-        d2 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=2)
-        d3 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=3)
-        dde_0, dde_m, dde_p = directed_depth_error(depth_pred, gt_depth, depth_mask, thr=3.0)
-        dbe_acc, dbe_com = depth_boundary_error(depth_pred, gt_depth, depth_mask)
+        d0 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=1, base=1.1)
+        d1 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=1)
+        d2 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=2)
+        d3 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=3)
+        dd2 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.2)
+        dd4 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.4)
+        # dde_0, dde_m, dde_p = directed_depth_error(depth_pred, gt_depth, depth_mask, thr=3.0)
+        # dbe_acc, dbe_com = depth_boundary_error(depth_pred, gt_depth, depth_mask)
 
-        # if len(gt_normals) > 0 and len(gt_planes) > 0:
+        if len(gt_normals) > 0 and len(gt_planes) > 0:
+            gt_pts = self.to3d(gt_depth.cpu())
+            pred_pts = self.to3d(depth_pred.cpu())
+            dist_plane = distance_to_plane(pred_pts, gt_pts, gt_normals[0].cpu(),
+                                           gt_planes[0].cpu())
         #     pe_flat, orient_err = planarity_errors(depth_pred, gt_normals[0],
         #                                            gt_planes[0], depth_mask)
+        if len(gt_planes) > 0:
+            d0_plane = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, plane_mask,
+                                          degree=1, base=1.1)
+            dd2_plane = direct_depth_accuracy(depth_pred, gt_depth, plane_mask, thr=0.2)
 
         if len(gt_normals) > 0 and len(pred_normals) > 0:
+            # if len(gt_planes) > 0:
+            #     normal_mask = plane_mask
+            # else:
+            normal_mask = depth_mask
             norm1 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
-                                             depth_mask, degree=11.25)
+                                             normal_mask, degree=11.25)
             norm2 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
-                                             depth_mask, degree=22.5)
+                                             normal_mask, degree=22.5)
             norm3 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
-                                             depth_mask, degree=30)
-            norm_mean, norm_median = normal_stats(pred_normals[0], gt_normals[0], depth_mask)
+                                             normal_mask, degree=30)
+            norm_mean, norm_median = normal_stats(pred_normals[0], gt_normals[0], normal_mask)
         # pe_flat, orient_err = planarity_errors(depth_pred, gt_normals, planes, mask)
         if len(sparse_pts) > 0:
             sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
 
-        self.err_meters["Abs. Rel. Error"].update(abs_rel, N)
-        self.err_meters["Sq. Rel. Error"].update(sq_rel, N)
-        self.err_meters["Linear RMS Error"].update(rms_sq_lin, N)
-        self.err_meters["Log RMS Error"].update(rms_sq_log, N)
-        self.err_meters["Direct Depth M Err"].update(dde_m)
-        self.err_meters["Direct Depth P Err"].update(dde_p)
-        self.err_meters["Direct Depth 0 Err"].update(dde_0)
-        self.err_meters["Depth Boundary Err"].update(dbe_com)
+        self.meters["Basic"]["Abs. Rel. Error"].update(abs_rel, N)
+        self.meters["Basic"]["Sq. Rel. Error"].update(sq_rel, N)
+        self.meters["Basic"]["Linear RMS Error"].update(rms_sq_lin, N)
+        self.meters["Basic"]["Log RMS Error"].update(rms_sq_log, N)
+
+        # self.meters["Other"]["Direct Depth M Err"].update(dde_m)
+        # self.meters["Other"]["Direct Depth P Err"].update(dde_p)
+        # self.meters["Other"]["Direct Depth 0 Err"].update(dde_0)
+        # self.meters["Other"]["Depth Boundary Err"].update(dbe_com)
 
         if len(sparse_pts) > 0:
-            self.err_meters["Sparse Pts. Abs Rel"].update(sparse_abs_rel.item(),
-                                                          pts_present_mask.sum().item())
+            self.meters["Basic"]["Sparse Pts. Abs Rel"].update(sparse_abs_rel.item(),
+                                                               pts_present_mask.sum().item())
 
-        self.acc_meters["Inlier D1"].update(d1, N)
-        self.acc_meters["Inlier D2"].update(d2, N)
-        self.acc_meters["Inlier D3"].update(d3, N)
-        self.acc_meters["Depth Boundary Acc"].update(dbe_acc)
+        self.meters["Acc_Depth"]["Inlier D0"].update(d0, N)
+        self.meters["Acc_Depth"]["Inlier D1"].update(d1, N)
+        self.meters["Acc_Depth"]["Inlier D2"].update(d2, N)
+        self.meters["Acc_Depth"]["Inlier D3"].update(d3, N)
+        self.meters["Direct_Acc"]["Direct Depth 0.2"].update(dd2, N)
+        self.meters["Direct_Acc"]["Direct Depth 0.4"].update(dd4, N)
+
+        # self.meters["Acc_Other"]["Depth Boundary Acc"].update(dbe_acc)
+        if len(gt_planes) > 0:
+            self.meters["Acc_Depth"]["Inlier D0 plane"].update(d0_plane)
+            self.meters["Direct_Acc"]["Direct Depth Plane 0.2"].update(dd2_plane)
 
         if len(gt_normals) > 0 and len(pred_normals) > 0:
-            self.acc_meters["Normal Angle 11.25"].update(norm1)
-            self.acc_meters["Normal Angle 22.5"].update(norm2)
-            self.acc_meters["Normal Angle 30"].update(norm3)
-            self.err_meters["Normal Mean"].update(norm_mean)
-            self.err_meters["Normal Median"].update(norm_median)
+            self.meters["Acc_Normals"]["Normal Angle 11.25"].update(norm1)
+            self.meters["Acc_Normals"]["Normal Angle 22.5"].update(norm2)
+            self.meters["Acc_Normals"]["Normal Angle 30"].update(norm3)
+            self.meters["Normals"]["Normal Mean"].update(norm_mean)
+            self.meters["Normals"]["Normal Median"].update(norm_median)
 
-        # if len(gt_normals) > 0 and len(gt_planes) > 0:
-        #     self.err_meters["Plane Flatness Err"].update(pe_flat)
-        #     self.err_meters["Plane Orientation Err"].update(orient_err)
+        if len(gt_normals) > 0 and len(gt_planes) > 0:
+            self.meters["Plane"]["Plane distance"].update(dist_plane)
+
+        #     self.meters[""]["Plane Flatness Err"].update(pe_flat)
+        #     self.meters[""]["Plane Orientation Err"].update(orient_err)
+        return d1
 
     def load_checkpoint(self, checkpoint_path=None, weights_only=False, eval_mode=False):
         '''
@@ -734,40 +804,24 @@ class MonoTrainer(object):
         Updates the metrics visualization
         '''
         epoch = self.epoch + 1
-        for key, meter in self.acc_meters.items():
-            self.acc_trackers[key].update(epoch, meter.avg, meter.std)
-
-        for key, meter in self.err_meters.items():
-            self.err_trackers[key].update(epoch, meter.avg, meter.std)
+        for cat_key, category in self.meters.items():
+            for key, meter in category.items():
+                self.trackers[key].update(epoch, meter.avg, meter.std)
 
         res_folder = osp.join(self.checkpoint_dir, "visdom")
         os.makedirs(res_folder, exist_ok=True)
 
-        traces = []
-        for key, tracker in self.err_trackers.items():
-            traces.append((key, tracker.x, tracker.y, tracker.std))
-        graph = linePlot(traces)
-        py.io.write_json(graph, osp.join(res_folder, "errors.plotly"))
-        # with open(osp.join(res_folder, "errors.json"), mode="w") as f:
-        #     f.write(json.dumps(graph))
+        for cat_key, category in self.meters.items():
+            traces = []
+            for key, tracker in category.items():
+                traces.append((key, tracker.x, tracker.y, tracker.std))
+            graph = linePlot(traces, cat_key)
+            py.io.write_json(graph, osp.join(res_folder, cat_key + ".plotly"))
 
-        if save_to_disk:
-            py.io.write_image(graph, osp.join(res_folder, "errors.png"))
-        if self.vis is not None:
-            self.vis[0].plotlyplot(graph, win="error_metrics", env=self.vis[1])
-
-        traces = []
-        for key, tracker in self.acc_trackers.items():
-            traces.append((key, tracker.x, tracker.y, tracker.std))
-        graph = linePlot(traces)
-        py.io.write_json(graph, osp.join(res_folder, "acc.plotly"))
-        # with open(osp.join(res_folder, "acc.json"), mode="w") as f:
-        #     f.write(json.dumps(graph))
-
-        if save_to_disk:
-            py.io.write_image(graph, osp.join(res_folder, "acc.png"))
-        if self.vis is not None:
-            self.vis[0].plotlyplot(graph, win="inlier_metrics", env=self.vis[1])
+            if save_to_disk:
+                py.io.write_image(graph, osp.join(res_folder, cat_key + ".png"))
+            if self.vis is not None:
+                self.vis[0].plotlyplot(graph, win=cat_key, env=self.vis[1])
 
     def print_batch_report(self, batch_num):
         '''
@@ -795,16 +849,17 @@ class MonoTrainer(object):
         Prints a report of the validation results
         '''
         lines = []
+        out_dict = defaultdict(lambda: defaultdict(float))
         lines.append("Epoch: {}\n".format(self.epoch + 1))
-        for key, meter in self.err_meters.items():
-            lines.append("{}: {:.4f} ({:.4f})\n".format(key, meter.avg, meter.std))
-
-        for key, meter in self.acc_meters.items():
-            lines.append("{}: {:.4f} ({:.4f})\n".format(key, meter.avg, meter.std))
+        for cat_key, category in self.meters.items():
+            lines.append(f"{cat_key}:\n")
+            for key, meter in category.items():
+                lines.append("\t{}: {:.4f} ({:.4f})\n".format(key, meter.avg, meter.std))
+                out_dict[cat_key][key] = meter.avg
 
         report = ''.join(lines)
         print(report)
-        return report
+        return out_dict
 
     def save_checkpoint(self, is_best):
         '''

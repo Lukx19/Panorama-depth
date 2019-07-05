@@ -9,9 +9,27 @@ import os
 
 import os.path as osp
 from run_utils import parseArgs, setupPipeline, setupGPUDevices
+import subprocess
 # --------------
 # PARAMETERS
 # --------------
+
+
+def create_file_list(file_names, test_list, results_dir, n_files=50, the_best=True):
+    file_names.sort(key=lambda v: v[0], reverse=the_best)
+
+    max_count = min(len(file_names), n_files)
+    lines = []
+    for i in range(max_count):
+        d1, filename = file_names[i]
+        cmd = f'grep {filename} "{test_list}"'
+        p = subprocess.Popen(cmd, stdout=subprocess.PIPE, shell=True)
+        (output, err) = p.communicate()
+        p.wait()
+        lines.append(str(output, 'utf-8'))
+
+    with open(f"{results_dir}/list_best_{the_best}.txt", "w") as f:
+        f.write("".join(lines))
 
 
 def test(experiment_name=None):
@@ -85,11 +103,14 @@ def test(experiment_name=None):
         visualization_freq=visualization_freq,
         validation_sample_freq=validation_sample_freq)
 
-    report = trainer.validate(
+    report, files_scores = trainer.validate(
         checkpoint_path=checkpoint, save_all_predictions=args.save_results)
 
     with open(osp.join(results_dir, 'metrics.txt'), 'w') as f:
-        f.write(report)
+        f.write(json.dumps(report, indent=2))
+
+    create_file_list(files_scores, args.test_list, results_dir, n_files=50, the_best=False)
+    create_file_list(files_scores, args.test_list, results_dir, n_files=50, the_best=True)
 
 
 if __name__ == "__main__":
