@@ -50,7 +50,4 @@ python train.py spherical_all_together --add_points --gpu_id 0 --batch_size 8 --
 
  CUDA_VISIBLE_DEVICES=0 python train.py debug --gpu_id 0 --batch_size 2 --loss_type PlaneNormClassSegLoss --load_normals --load_planes --add_points --network_type RectNetSmoothSphere --workers 8 --checkpoint ./experiments/RectNetSphereNormals_PlaneNormClassSegLoss_with_sphere_dirs/model_best.pth --only_weights
 
- CUDA_VISIBLE_DEVICES=0 python train.py smoothin
-g_over_whole --gpu_id 0 --batch_size 6 --loss_type PlaneNormClassSegLoss --load_normals --load_planes -
--add_points --network_type RectNetSmoothSphere --workers 8 --checkpoint ./experiments/RectNetSmoothSphe
-re_PlaneNormClassSegLoss_smoothing_over_whole/checkpoint_latest.pth
+ python run_experiments.py ./experiments/lisa/ --run_test --test_list ./data_splits/list_best_False.txt --save_results

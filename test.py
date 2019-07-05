@@ -32,14 +32,13 @@ def create_file_list(file_names, test_list, results_dir, n_files=50, the_best=Tr
         f.write("".join(lines))
 
 
-def test(experiment_name=None):
-    args = parseArgs(test=True)
+def test(args=None):
+    if args is None:
+        args = parseArgs(test=True)
     torch.manual_seed(19)
     checkpoint = args.checkpoint
-    if experiment_name is None:
-        expr_name = args.experiment_name
-    else:
-        expr_name = experiment_name
+
+    expr_name = args.experiment_name
 
     if osp.exists(expr_name):
         experiment_folder = expr_name
@@ -111,6 +110,7 @@ def test(experiment_name=None):
 
     create_file_list(files_scores, args.test_list, results_dir, n_files=50, the_best=False)
     create_file_list(files_scores, args.test_list, results_dir, n_files=50, the_best=True)
+    return report
 
 
 if __name__ == "__main__":

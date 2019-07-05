@@ -8,10 +8,11 @@ import math
 import numpy as np
 from PIL import Image
 import util
-
+from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
+from multiprocessing import Pool
 
 
 class Axis(Enum):
@@ -210,6 +211,29 @@ def saveDepthMaps(rgb, gt, pred, filename):
     plt.close(fig)
 
 
+def convert(args):
+    output_dir, data = args
+    img_path, gt_path, pred_path = data
+
+    basename = osp.basename(img_path)
+    basename = osp.splitext(basename)[0]
+    # print(basename)
+    depth_gt = np.squeeze(util.read_tiff(gt_path))
+    depth_pred = np.squeeze(util.read_tiff(pred_path))
+    rgb = np.array(Image.open(img_path))
+
+    filename = osp.join(output_dir, basename + ".png")
+    saveDepthMaps(rgb, depth_gt, depth_pred, filename)
+
+    pcd = panoDepthToPcl(depth_pred, rgb)
+    filename = osp.join(output_dir, basename + "_pred.ply")
+    savePcl(pcd[0], pcd[1], filename)
+
+    pcd = panoDepthToPcl(depth_gt, rgb)
+    filename = osp.join(output_dir, basename + "_gt.ply")
+    savePcl(pcd[0], pcd[1], filename)
+
+
 def visualizePclDepth(results_dir):
     output_dir = osp.join(results_dir, "./visualizations")
     os.makedirs(output_dir, exist_ok=True)
@@ -221,27 +245,11 @@ def visualizePclDepth(results_dir):
         gt_depths = pred_depths
     # print(results_dir+"/*_color.jpg")
     # print(images, gt_depths, pred_depths)
-
-    for img_path, gt_path, pred_path in zip(images, gt_depths, pred_depths):
-
-        basename = osp.basename(img_path)
-        basename = osp.splitext(basename)[0]
-        print(basename)
-        depth_gt = np.squeeze(util.read_tiff(gt_path))
-        depth_pred = np.squeeze(util.read_tiff(pred_path))
-        rgb = np.array(Image.open(img_path))
-
-        filename = osp.join(output_dir, basename + ".png")
-        saveDepthMaps(rgb, depth_gt, depth_pred, filename)
-
-        pcd = panoDepthToPcl(depth_pred, rgb)
-        filename = osp.join(output_dir, basename + "_pred.ply")
-        savePcl(pcd[0], pcd[1], filename)
-
-        pcd = panoDepthToPcl(depth_gt, rgb)
-        filename = osp.join(output_dir, basename + "_gt.ply")
-        savePcl(pcd[0], pcd[1], filename)
-        # draw_geometries([pcd])
+    input_args = zip(images, gt_depths, pred_depths)
+    input_args = [(results_dir, data) for data in input_args]
+    pool = Pool(os.cpu_count() // 2)
+    for _ in tqdm(pool.imap_unordered(convert, input_args), total=len(input_args)):
+        pass
 
 
 def main():
