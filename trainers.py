@@ -806,12 +806,12 @@ class MonoTrainer(object):
         epoch = self.epoch + 1
         for cat_key, category in self.meters.items():
             for key, meter in category.items():
-                self.trackers[key].update(epoch, meter.avg, meter.std)
+                self.trackers[cat_key][key].update(epoch, meter.avg, meter.std)
 
         res_folder = osp.join(self.checkpoint_dir, "visdom")
         os.makedirs(res_folder, exist_ok=True)
 
-        for cat_key, category in self.meters.items():
+        for cat_key, category in self.trackers.items():
             traces = []
             for key, tracker in category.items():
                 traces.append((key, tracker.x, tracker.y, tracker.std))
@@ -1124,7 +1124,7 @@ def visualize_loss(visdom, loss_trackers, directory, save_to_disk=False):
 
     for key, tracker in loss_trackers.items():
         key_name = key + "_loss"
-        graph = linePlot([(key, tracker.x, tracker.y, None)])
+        graph = linePlot([(key, tracker.x, tracker.y, None)], key_name)
 
         if save_to_disk:
             file = osp.join(data_folder, key_name + '.plotly')
