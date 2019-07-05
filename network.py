@@ -314,6 +314,7 @@ rectnet_ops = {
     "sigma_c_mult": [0.4, 0.4, 0.2],
     "sigma_n": [1 / 3, 1 / 3, 1 / 3],
     "guided_merge": True,
+    "fusion_merge": False,
 }
 
 
@@ -322,7 +323,7 @@ class RectNet(nn.Module):
     def __init__(self, in_channels,
                  normal_est=False, segmentation_est=False,
                  calc_planes=False, normals_est_type='standart',
-                 normal_smoothing=False, plane_type="fusion", ops=rectnet_ops):
+                 normal_smoothing=False, ops=rectnet_ops):
         super(RectNet, self).__init__()
         self.height = 256
         self.width = 512
@@ -405,25 +406,26 @@ class RectNet(nn.Module):
         self.calc_planes = calc_planes
         self.calc_segmentation = segmentation_est
         self.normal_smoothing = normal_smoothing
-        self.plane_type = plane_type
+        # self.plane_type = plane_type
         self.calc_norm_seg_2x = False
         self.calc_merge_guidance = False
+        self.fusion_merge = self.ops["fusion_merge"]
 
         if self.calc_planes:
-            if self.plane_type == "fusion":
-                self.calc_normals = True
-                self.calc_segmentation = True
-            elif self.plane_type == "downsampled":
-                self.calc_normals = False
-                self.calc_segmentation = False
-                self.calc_norm_seg_2x = True
-                self.calc_merge_guidance = True
+            # if self.plane_type == "fusion":
+            # self.calc_normals = True
+            # self.calc_segmentation = True
+            # elif self.plane_type == "downsampled":
+            self.calc_normals = True
+            self.calc_segmentation = True
+            self.calc_norm_seg_2x = True
+            self.calc_merge_guidance = True
 
         if self.normal_smoothing:
-            self.calc_normals = False
+            self.calc_normals = True
             self.calc_norm_seg_2x = True
             self.calc_planes = False
-            self.calc_segmentation = False
+            self.calc_segmentation = True
             self.calc_merge_guidance = True
 
         self.normals_type = normals_est_type
@@ -475,18 +477,12 @@ class RectNet(nn.Module):
             self.seg_cov3 = nn.Conv2d(32, 1, 1)
 
         if self.calc_planes:
-            if self.plane_type == "fusion":
-                self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
-                self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
-                self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
-                self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad)
-            if self.plane_type == "downsampled":
-                self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
-                self.to3d = Depth2Points(self.height, self.width)
-                self.planar_to_depth = PlanarToDepth(height=self.height // 2, width=self.width // 2)
-                self.merge_conv_p = nn.Conv2d(1, 16, 3, padding=1)
-                self.merge_conv_d = nn.Conv2d(1, 16, 3, padding=1)
-                self.merge_conv = nn.Conv2d(32, 1, 3, padding=1)
+            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+            self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
+            self.to3d = Depth2Points(self.height, self.width)
+            self.merge_conv_p = nn.Conv2d(1, 16, 3, padding=1)
+            self.merge_conv_d = nn.Conv2d(1, 16, 3, padding=1)
+            self.merge_conv = nn.Conv2d(32, 1, 3, padding=1)
 
             # self.prediction_planar = nn.Conv2d(66, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
@@ -496,7 +492,15 @@ class RectNet(nn.Module):
             self.guidance = nn.Conv2d(64, 1, 3, padding=1)
             self.guidance2 = nn.Conv2d(2, 1, 3, padding=1)
 
+        if self.fusion_merge:
+            self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
+            self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
+            self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad)
+
         self.apply(xavier_init)
+        print(f""""normals: {self.calc_normals}, seg: {self.calc_segmentation},
+              normals2x: {self.calc_norm_seg_2x}, smoothing: {self.normal_smoothing},
+              planes: {self.calc_planes}""")
 
     def forward(self, inputs):
         outputs = {}
@@ -570,7 +574,8 @@ class RectNet(nn.Module):
 
         normals_2x = None
         seg_2x = None
-        if self.calc_norm_seg_2x:
+
+        if self.calc_normals:
             #  1. calculate normals with decoder from in 1x resolution
             normals_input = self.decoder1_normal(decoder1_0_out)
             if self.normals_type == "sphere":
@@ -585,10 +590,13 @@ class RectNet(nn.Module):
 
             outputs["normals_emb"] = pred_normals_embed
             outputs["normals"] = pred_normals
+
+        if self.calc_segmentation:
             # 1.1 calculate 1x segmentation
             seg_out = self.decoder1_seg(decoder1_0_out)
             pred_seg = self.decoder2_seg(seg_out)
             outputs["segmentation"] = pred_seg
+        if self.calc_norm_seg_2x:
             # 2. downsample to 1/2 resolution -> reduce noise
             normals_2x = self.avg_pool_normal(pred_normals).detach()
             seg_2x = self.avg_pool_seg(torch.sigmoid(pred_seg.clone())).detach()
@@ -619,11 +627,11 @@ class RectNet(nn.Module):
                 # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
                 upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
                                                        scale_factor=2, mode="bilinear")
-                upsampled_pred_2x = upsampled_planar_depth
+                # upsampled_pred_2x = upsampled_planar_depth
                 outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
             # print(upsampled_planar_depth.requires_grad)
 
-        if self.calc_planes and self.plane_type == "downsampled" and DataType.Planes in inputs:
+        if self.calc_planes and DataType.Planes in inputs:
             planes = inputs[DataType.Planes]
             planes_2x = F.max_pool2d(planes, kernel_size=3, stride=2, padding=1)
             planar_depth_2x = self.planar_to_depth(pred_2x.detach(), planes_2x,
@@ -660,8 +668,8 @@ class RectNet(nn.Module):
         outputs["depth1x"] = opt_depth
         outputs["depth2x"] = pred_2x
 
-        merge_seg = None
         if self.calc_merge_guidance:
+            merge_seg = None
             if self.ops["guided_merge"]:
                 outputs["guidance"] = []
                 merge = torch.tanh(self.guidance(decoder1_2_out))
@@ -688,34 +696,43 @@ class RectNet(nn.Module):
             outputs["pcl"].append(self.to3d(refined_depth.clone().detach()))
             outputs["depth1x"] = refined_depth
 
+        if self.fusion_merge:
+            emb_d = self.fusion_d(opt_depth)
+            emb_g = self.fusion_g(upsampled_planar_depth)
+            feat_planar = torch.cat((emb_d, emb_g), dim=1)
+            emb_f = self.fusion(feat_planar)
+            refined_depth = emb_f + upsampled_planar_depth
+            outputs["depth_ref"] = refined_depth
+            outputs["guidance"] = [emb_d, emb_g, emb_f]
+
         # outputs["depth_normals"] = self.depth_normals(opt_depth)
-        if self.calc_normals and not self.normal_smoothing:
-            if self.normal_smoothing:
-                normals_input = self.decoder1_normal(decoder1_0_out)
-            elif self.normals_type == 'deep':
-                normals_input = encoder2_2_out
-            else:
-                normals_input = decoder1_2_out
+        # if self.calc_normals and not self.normal_smoothing:
+        #     if self.normal_smoothing:
+        #         normals_input = self.decoder1_normal(decoder1_0_out)
+        #     elif self.normals_type == 'deep':
+        #         normals_input = encoder2_2_out
+        #     else:
+        #         normals_input = decoder1_2_out
 
-            if self.normals_type == "sphere":
-                res = self.normals(normals_input)
-                pred_normals = res["normals"]
-                pred_normals_embed = res["normals_embedding"]
-                outputs["normals_classes"] = res["normals_classes"]
-            else:
-                res = self.normals(normals_input)
-                pred_normals = res
-                pred_normals_embed = res
+        #     if self.normals_type == "sphere":
+        #         res = self.normals(normals_input)
+        #         pred_normals = res["normals"]
+        #         pred_normals_embed = res["normals_embedding"]
+        #         outputs["normals_classes"] = res["normals_classes"]
+        #     else:
+        #         res = self.normals(normals_input)
+        #         pred_normals = res
+        #         pred_normals_embed = res
 
-            outputs["normals_emb"] = pred_normals_embed
-            outputs["normals"] = pred_normals
+        #     outputs["normals_emb"] = pred_normals_embed
+        #     outputs["normals"] = pred_normals
 
-        if self.calc_segmentation and not self.normal_smoothing:
-            seg1 = self.seg_cov1(decoder1_2_out)
-            seg2 = self.seg_cov2(decoder1_2_out)
-            seg_cat = torch.cat((seg1, seg2), 1)
-            pred_seg = self.seg_cov3(seg_cat)
-            outputs["segmentation"] = pred_seg
+        # if self.calc_segmentation and not self.normal_smoothing:
+        #     seg1 = self.seg_cov1(decoder1_2_out)
+        #     seg2 = self.seg_cov2(decoder1_2_out)
+        #     seg_cat = torch.cat((seg1, seg2), 1)
+        #     pred_seg = self.seg_cov3(seg_cat)
+        #     outputs["segmentation"] = pred_seg
 
         # if (self.calc_normals and self.calc_planes
         #         and DataType.Planes in inputs and self.calc_segmentation
