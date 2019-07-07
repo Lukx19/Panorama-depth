@@ -890,10 +890,10 @@ class MonoTrainer(object):
             filename=checkpoint_path)
 
         # Copies the latest checkpoint to another file stored for each epoch
-        history_path = osp.join(
-            self.checkpoint_dir,
-            'checkpoint_{:03d}.pth'.format(self.epoch + 1))
-        shutil.copyfile(checkpoint_path, history_path)
+        # history_path = osp.join(
+        #     self.checkpoint_dir,
+        #     'checkpoint_{:03d}.pth'.format(self.epoch + 1))
+        # shutil.copyfile(checkpoint_path, history_path)
         print('Checkpoint saved')
 
 
