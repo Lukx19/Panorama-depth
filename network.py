@@ -314,6 +314,7 @@ rectnet_ops = {
     "sigma_c_mult": [0.4, 0.4, 0.2],
     "sigma_n": [1 / 3, 1 / 3, 1 / 3],
     "guided_merge": True,
+    "seg_small_merge": False,
     "fusion_merge": False,
 }
 
@@ -408,25 +409,20 @@ class RectNet(nn.Module):
         self.normal_smoothing = normal_smoothing
         # self.plane_type = plane_type
         self.calc_norm_seg_2x = False
-        self.calc_merge_guidance = False
+        self.calc_merge_guidance = self.ops["seg_small_merge"]
         self.fusion_merge = self.ops["fusion_merge"]
 
         if self.calc_planes:
-            # if self.plane_type == "fusion":
-            # self.calc_normals = True
-            # self.calc_segmentation = True
-            # elif self.plane_type == "downsampled":
             self.calc_normals = True
             self.calc_segmentation = True
             self.calc_norm_seg_2x = True
-            self.calc_merge_guidance = True
+            self.normal_smoothing = False
 
         if self.normal_smoothing:
             self.calc_normals = True
             self.calc_norm_seg_2x = True
             self.calc_planes = False
             self.calc_segmentation = True
-            self.calc_merge_guidance = True
 
         self.normals_type = normals_est_type
         if self.calc_normals or self.calc_norm_seg_2x:
@@ -1184,11 +1180,13 @@ class ConvELUBlock(nn.Module):
             stride=stride,
             padding=self.padding,
             dilation=dilation)
+        self.norm = nn.GroupNorm(num_groups=out_channels // 2, num_channels=out_channels)
 
     def forward(self, x):
         if self.reflection_pad:
-            return F.elu(self.conv(self.padding_l(x)), inplace=True)
-        return F.elu(self.conv(x), inplace=True)
+            x = self.padding_l(x)
+        return F.elu(self.norm(self.conv(x)), inplace=True)
+        # return F.elu(self.conv(x), inplace=True)
 
 
 class UpsampleShuffleBlock(nn.Module):

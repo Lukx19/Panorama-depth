@@ -84,6 +84,9 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
 
     print(json.dumps(model_opts))
     criterion = None
+    use_revis = True
+    if "omni_loss" in model_opts and model_opts["omni_loss"]:
+        use_revis = False
     if loss_type is not None:
         if loss_type == "MultiScale":
             criterion = MultiScaleL2Loss(alpha_list, beta_list)
@@ -99,8 +102,8 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
             criterion = NormSegLoss()
         elif loss_type == "PlaneNormSegLoss":
             normal_loss = CosineNormalsLoss()
-            criterion = PlaneNormSegLoss(normal_loss=normal_loss)
-            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
+            criterion = PlaneNormSegLoss(normal_loss=normal_loss, revis=use_revis)
+            # loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
             # loss_scales["Plane_dist_plane_loss"] = 10.0
             # loss_scales["revis_l1_dist_1"] = 10.0
             # loss_scales["revis_l1_dist_2"] = 10.0
@@ -108,12 +111,12 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
             # loss_scales["Plane_normal_similarity_loss"] = 0.0
             # loss_scales["Segmentation_Loss"] = 0.0
         elif loss_type == "PlaneParamsLoss":
-            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
+            # loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
             criterion = PlaneParamsLoss()
         elif loss_type == "PlaneNormClassSegLoss":
-            loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
+            # loss_scales["Plane_dist_plane_loss_Ad"] = 0.0
             normal_loss = SphericalNormalsLoss()
-            criterion = PlaneNormSegLoss(normal_loss=normal_loss)
+            criterion = PlaneNormSegLoss(normal_loss=normal_loss, revis=use_revis)
             # loss_scales["Plane_dist_plane_loss"] = 10.0
             # loss_scales["revis_l1_dist_1"] = 10.0
             # loss_scales["revis_l1_dist_2"] = 10.0
@@ -227,10 +230,10 @@ def parseArgs(test=False, predict=False):
 
         parser.add_argument('--batch_size', default=8,
                             type=int, help='Batch size')
-        parser.add_argument('--decay_step_size', default=3, type=int)
-        parser.add_argument('--decay_lr', default=0.5, type=float)
+        parser.add_argument('--decay_step_size', default=4, type=int)
+        parser.add_argument('--decay_lr', default=0.7, type=float)
         parser.add_argument('--epochs', default=10, type=int)
-        parser.add_argument('--lr', default=2e-4,
+        parser.add_argument('--lr', default=2e-3,
                             type=float, help='Learning rate')
         parser.add_argument('--disable_visdom', action="store_true", default=False,
                             help='Disable use of visdom server in training')
