@@ -105,6 +105,20 @@ class Normalize(object):
         return ImageOps.equalize(image)
 
 
+class RandomSparsePts(object):
+    def __init__(self):
+        pass
+
+    def __call__(self, sparse_tensor):
+        indexes = torch.nonzero(sparse_tensor)
+        n_sparse_pts = indexes.size(0)
+        k_pts = np.random.randint(0, n_sparse_pts)
+        selected_pts = np.random.choice(np.array(range(n_sparse_pts)), k_pts)
+        indexes = indexes[selected_pts, :, :]
+        sparse_tensor[indexes] = 0
+        return sparse_tensor
+
+
 #  converts to tensor and normalizes to [0,1] range
 default_transformer = transforms.Compose([
     # Normalize(),
@@ -113,6 +127,11 @@ default_transformer = transforms.Compose([
     #                      std=[0.229, 0.224, 0.225])
 ])
 default_depth_transformer = transforms.Compose([ToTensor(scale=False)])
+default_pts_transformer = transforms.Compose([
+    ToTensor(scale=False),
+    RandomSparsePts(),
+])
+
 prediction_rgb_trasformer = transforms.Compose([
     # Normalize(),
     transforms.Resize(size=(256, 512)),
@@ -275,6 +294,7 @@ class ImageDataset(torch.utils.data.Dataset):
 
         # Create tuples of inputs/GT
         self.images = glob(image_folder + "/**/*.jpg", recursive=True)
+        self.images += glob(image_folder + "/**/*.png", recursive=True)
         self.transformer_rgb = transformer_rgb
 
     def __getitem__(self, idx):
