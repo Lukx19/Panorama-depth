@@ -254,8 +254,12 @@ class MultiScaleL2Loss(nn.Module):
 
             depth_gt = data.get(DataType.Depth, scale=scale)[0]
             mask = data.get(DataType.Mask, scale=scale)[0]
-            alpha = self.alpha_list[i]
-            beta = self.beta_list[i]
+            if i >= len(self.alpha_list):
+                alpha = self.alpha_list[-1]
+                beta = self.beta_list[-1]
+            else:
+                alpha = self.alpha_list[i]
+                beta = self.beta_list[i]
 
             # Compute depth error at this scale
             depth_errors[f"depth_err_s{scale}_{i}"] = alpha * self.depth_metric(
@@ -548,40 +552,44 @@ class PlanarLoss(nn.Module):
         # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
 
         losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
-        planeMean = createPlaneMean(mask, planes, adaptive=True)
-        losses["Plane_dist_plane_loss_Ad"] = planeMean(distace_to_gt_plane)
+        # planeMean = createPlaneMean(mask, planes, adaptive=True)
+        # losses["Plane_dist_plane_loss_Ad"] = planeMean(distace_to_gt_plane)
 
         # distance_loss2 = l1Loss(-distace_to_pred_plane,
         # torch.zeros_like(distace_to_pred_plane), validMean)
 
         #  This losses look at all normals of one plane and create plane parameters
-        avg_gt_normal = None
-        pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
-        gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
-        gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
-        pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
-        with torch.no_grad():
-            planes = data.get(DataType.Planes, scale=1)[0]
-            planes = planes * mask
-            b, p, h, w = planes.size()
-            planes = torch.reshape(planes, (b, p, 1, -1))
-            # planes_ext = torch.cat((planes, planes, planes), dim=2)
-            avg_gt_normal = planeAwarePooling(gt_normals, planes)
+        # avg_gt_normal = None
+        # pred_points = torch.reshape(pred_points, (b, 1, 3, -1))
+        # gt_points = torch.reshape(gt_points, (b, 1, 3, -1))
+        # gt_normals = torch.reshape(gt_normals, (b, 1, 3, -1))
+        # pred_normals = torch.reshape(pred_normals, (b, 1, 3, -1))
+        # with torch.no_grad():
+        #     planes = data.get(DataType.Planes, scale=1)[0]
+        #     planes = planes * mask
+        #     b, p, h, w = planes.size()
+        #     planes = torch.reshape(planes, (b, p, 1, -1))
+        #     # planes_ext = torch.cat((planes, planes, planes), dim=2)
+        #     avg_gt_normal = planeAwarePooling(gt_normals, planes)
 
-        avg_pred_normal = planeAwarePooling(pred_normals, planes)
-        similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=None)
+        # avg_pred_normal = planeAwarePooling(pred_normals, planes)
+        # similarity_planar = cosineLoss(avg_gt_normal, avg_pred_normal, dim=2, mean_fce=None)
         # histograms["Plane_normal_loss"] = similarity_planar.detach()
-        losses["Plane_normal_loss"] = torch.mean(similarity_planar)
+        # losses["Plane_normal_loss"] = torch.mean(similarity_planar)
 
         return losses, histograms
 
 
 class PlaneNormSegLoss(nn.Module):
-    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss()):
+    def __init__(self, width=512, height=256, normal_loss=CosineNormalsLoss(), revis=True):
         super(PlaneNormSegLoss, self).__init__()
 
         self.normal_loss = normal_loss
-        self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
+        if revis:
+            self.grad_loss = GradLoss(all_levels=True, adaptive=False, depth_normals=False)
+        else:
+            self.grad_loss = MultiScaleL2Loss([0.535, 0.272], [0.134, 0.068])
+
         self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
         self.planar_loss = PlanarLoss(width, height)
 
