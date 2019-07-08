@@ -233,7 +233,7 @@ def parseArgs(test=False, predict=False):
         parser.add_argument('--decay_step_size', default=4, type=int)
         parser.add_argument('--decay_lr', default=0.7, type=float)
         parser.add_argument('--epochs', default=10, type=int)
-        parser.add_argument('--lr', default=2e-3,
+        parser.add_argument('--lr', default=3e-3,
                             type=float, help='Learning rate')
         parser.add_argument('--disable_visdom', action="store_true", default=False,
                             help='Disable use of visdom server in training')

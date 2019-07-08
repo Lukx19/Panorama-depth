@@ -426,6 +426,8 @@ class RectNet(nn.Module):
 
         self.normals_type = normals_est_type
         if self.calc_normals or self.calc_norm_seg_2x:
+            self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
+                                                reflection_pad=reflection_pad)
             if self.normals_type == "standart":
                 self.normals = NormalsEmbedding(in_channels=64)
             elif self.normals_type == "sphere":
@@ -437,12 +439,12 @@ class RectNet(nn.Module):
             else:
                 raise ValueError("Unknown type of normal prediction module")
 
-        if self.calc_norm_seg_2x:
-            self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
-                                                reflection_pad=reflection_pad)
+        if self.calc_segmentation:
             self.decoder1_seg = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
                                              reflection_pad=reflection_pad)
             self.decoder2_seg = nn.Conv2d(64, 1, 1)
+
+        if self.calc_norm_seg_2x:
             #  need to get half spatial size of normals
             self.avg_pool_normal = nn.AvgPool2d(3, stride=2, padding=1)
             self.avg_pool_seg = nn.AvgPool2d(3, stride=2, padding=1)
@@ -466,11 +468,11 @@ class RectNet(nn.Module):
 
                 self.smoothing_l = nn.ModuleList(smooth_layers)
 
-        if self.calc_segmentation:
-            self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1, reflection_pad=reflection_pad)
-            self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2,
-                                         reflection_pad=reflection_pad)
-            self.seg_cov3 = nn.Conv2d(32, 1, 1)
+        # if self.calc_segmentation:
+        #     self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1, reflection_pad=reflection_pad)
+        #     self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2,
+        #                                  reflection_pad=reflection_pad)
+        #     self.seg_cov3 = nn.Conv2d(32, 1, 1)
 
         if self.calc_planes:
             self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
