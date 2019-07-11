@@ -143,12 +143,11 @@ def write_tiff(image_fpath, data):
         io.imsave(image_fpath, data, check_contrast=False, compress=6)
 
 
-def saveTensorDepth(filename, tensor, scale):
+def saveTensorTiff(filename, tensor):
     img = tensor.cpu().numpy()
     img = np.squeeze(img)
     # img = np.transpose(img, (1, 2, 0))
     # print(img.shape)
-    img *= scale
     write_tiff(filename, img)
     # img = Tt.functional.to_pil_image(img)
     # img = Image.fromarray(img, mode="I")
@@ -471,3 +470,16 @@ def onehottify(x, n=None):
         onehot = np.reshape(onehot, (*shape, n))
         onehot = np.squeeze(onehot)
     return onehot
+
+
+def makeUnitVecotr(tensor):
+    if len(tensor.size()) == 3:
+        ch, h, w = tensor.size()
+        dim = 0
+    else:
+        b, ch, h, w = tensor.size()
+        dim = 1
+    norm = torch.norm(tensor, p=None, dim=dim, keepdim=True)
+    norm = torch.max(norm, torch.ones_like(norm) * 1e-5)
+    unit_vec = tensor / norm
+    return unit_vec

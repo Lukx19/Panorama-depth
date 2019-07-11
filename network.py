@@ -316,6 +316,7 @@ rectnet_ops = {
     "guided_merge": True,
     "seg_small_merge": False,
     "fusion_merge": False,
+    "use_group_norm": True,
 }
 
 
@@ -330,56 +331,61 @@ class RectNet(nn.Module):
         self.width = 512
         self.ops = ops
         reflection_pad = self.ops["reflection_pad"]
+        self.use_gn = self.ops["use_group_norm"]
         # Network definition
         self.input0_0 = ConvELUBlock(in_channels, 8, (3, 9), padding=(
-            1, 4), reflection_pad=reflection_pad)
+            1, 4), reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.input0_1 = ConvELUBlock(in_channels, 8, (5, 11), padding=(
-            2, 5), reflection_pad=reflection_pad)
+            2, 5), reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.input0_2 = ConvELUBlock(in_channels, 8, (5, 7), padding=(
-            2, 3), reflection_pad=reflection_pad)
+            2, 3), reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.input0_3 = ConvELUBlock(
-            in_channels, 8, 7, padding=3, reflection_pad=reflection_pad)
+            in_channels, 8, 7, padding=3, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.input1_0 = ConvELUBlock(32, 16, (3, 9), padding=(
-            1, 4), reflection_pad=reflection_pad)
+            1, 4), reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.input1_1 = ConvELUBlock(32, 16, (3, 7), padding=(
-            1, 3), reflection_pad=reflection_pad)
+            1, 3), reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.input1_2 = ConvELUBlock(32, 16, (3, 5), padding=(
-            1, 2), reflection_pad=reflection_pad)
+            1, 2), reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.input1_3 = ConvELUBlock(
-            32, 16, 5, padding=2, reflection_pad=reflection_pad)
+            32, 16, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.encoder0_0 = ConvELUBlock(
-            64, 128, 3, stride=2, padding=1, reflection_pad=reflection_pad)
+            64, 128, 3, stride=2, padding=1, reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.encoder0_1 = ConvELUBlock(
-            128, 128, 3, padding=1, reflection_pad=reflection_pad)
+            128, 128, 3, padding=1, reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.encoder0_2 = ConvELUBlock(
-            128, 128, 3, padding=1, reflection_pad=reflection_pad)
+            128, 128, 3, padding=1, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.encoder1_0 = ConvELUBlock(
-            128, 256, 3, stride=2, padding=1, reflection_pad=reflection_pad)
+            128, 256, 3, stride=2, padding=1, reflection_pad=reflection_pad, group_norm=self.use_gn)
         self.encoder1_1 = ConvELUBlock(
-            256, 256, 3, padding=2, dilation=2, reflection_pad=reflection_pad)
+            256, 256, 3, padding=2, dilation=2, reflection_pad=reflection_pad,
+            group_norm=self.use_gn)
         self.encoder1_2 = ConvELUBlock(
-            256, 256, 3, padding=4, dilation=4, reflection_pad=reflection_pad)
+            256, 256, 3, padding=4, dilation=4, reflection_pad=reflection_pad,
+            group_norm=self.use_gn)
         self.encoder1_3 = ConvELUBlock(
-            512, 256, 1, reflection_pad=reflection_pad)
+            512, 256, 1, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.encoder2_0 = ConvELUBlock(
-            256, 512, 3, padding=8, dilation=8, reflection_pad=reflection_pad)
+            256, 512, 3, padding=8, dilation=8, reflection_pad=reflection_pad,
+            group_norm=self.use_gn)
         self.encoder2_1 = ConvELUBlock(
-            512, 512, 3, padding=16, dilation=16, reflection_pad=reflection_pad)
+            512, 512, 3, padding=16, dilation=16, reflection_pad=reflection_pad,
+            group_norm=self.use_gn)
         self.encoder2_2 = ConvELUBlock(
-            1024, 512, 1, reflection_pad=reflection_pad)
+            1024, 512, 1, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.decoder0_0 = ConvTransposeELUBlock(
             512, 256, 4, stride=2, padding=1, reflection_pad=reflection_pad)
 
         self.decoder0_1 = ConvELUBlock(
-            256, 256, 5, padding=2, reflection_pad=reflection_pad)
+            256, 256, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.prediction0 = nn.Conv2d(256, 1, 3, padding=1)
 
@@ -387,17 +393,17 @@ class RectNet(nn.Module):
             256, 128, 4, stride=2, padding=1, reflection_pad=reflection_pad)
 
         self.decoder1_1 = ConvELUBlock(
-            128, 128, 5, padding=2, reflection_pad=reflection_pad)
+            128, 128, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.decoder1_2 = ConvELUBlock(
-            129, 64, 1, reflection_pad=reflection_pad)
+            129, 64, 1, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.prediction1 = nn.Conv2d(64, 1, 3, padding=1)
 
         self.cspn = self.ops["cspn"]
         if self.cspn:
             self.guidance = ConvELUBlock(
-                64, 8, 3, padding=1, reflection_pad=reflection_pad)
+                64, 8, 3, padding=1, reflection_pad=reflection_pad, group_norm=self.use_gn)
             self.cspn = CSPN()
 
         # self.depth_normals = DepthToNormals(height=self.height, width=self.width,
@@ -427,7 +433,8 @@ class RectNet(nn.Module):
         self.normals_type = normals_est_type
         if self.calc_normals or self.calc_norm_seg_2x:
             self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
-                                                reflection_pad=reflection_pad)
+                                                reflection_pad=reflection_pad,
+                                                group_norm=self.use_gn)
             if self.normals_type == "standart":
                 self.normals = NormalsEmbedding(in_channels=64)
             elif self.normals_type == "sphere":
@@ -441,7 +448,7 @@ class RectNet(nn.Module):
 
         if self.calc_segmentation:
             self.decoder1_seg = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
-                                             reflection_pad=reflection_pad)
+                                             reflection_pad=reflection_pad, group_norm=self.use_gn)
             self.decoder2_seg = nn.Conv2d(64, 1, 1)
 
         if self.calc_norm_seg_2x:
@@ -468,19 +475,13 @@ class RectNet(nn.Module):
 
                 self.smoothing_l = nn.ModuleList(smooth_layers)
 
-        # if self.calc_segmentation:
-        #     self.seg_cov1 = ConvELUBlock(64, 16, 3, padding=1, reflection_pad=reflection_pad)
-        #     self.seg_cov2 = ConvELUBlock(64, 16, 3, padding=2, dilation=2,
-        #                                  reflection_pad=reflection_pad)
-        #     self.seg_cov3 = nn.Conv2d(32, 1, 1)
-
         if self.calc_planes:
-            self.planar_to_depth = PlanarToDepth(height=self.height, width=self.width)
+            self.planar_to_depth = PlanarToDepth(height=self.height // 2, width=self.width // 2)
             self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
             self.to3d = Depth2Points(self.height, self.width)
-            self.merge_conv_p = nn.Conv2d(1, 16, 3, padding=1)
-            self.merge_conv_d = nn.Conv2d(1, 16, 3, padding=1)
-            self.merge_conv = nn.Conv2d(32, 1, 3, padding=1)
+            # self.merge_conv_p = nn.Conv2d(1, 16, 3, padding=1)
+            # self.merge_conv_d = nn.Conv2d(1, 16, 3, padding=1)
+            # self.merge_conv = nn.Conv2d(32, 1, 3, padding=1)
 
             # self.prediction_planar = nn.Conv2d(66, 1, 3, padding=1)
             # self.mean_shift = Bin_Mean_Shift()
@@ -491,9 +492,12 @@ class RectNet(nn.Module):
             self.guidance2 = nn.Conv2d(2, 1, 3, padding=1)
 
         if self.fusion_merge:
-            self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
-            self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad)
-            self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad)
+            self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad,
+                                        group_norm=self.use_gn)
+            self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad,
+                                        group_norm=self.use_gn)
+            self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad,
+                                      group_norm=self.use_gn)
 
         self.apply(xavier_init)
         print(f""""normals: {self.calc_normals}, seg: {self.calc_segmentation},
@@ -641,11 +645,12 @@ class RectNet(nn.Module):
                                           pred_2x, planar_depth_2x)
             outputs["pcl2x"].append(self.to3d_2x(planar_depth_2x.clone().detach()))
 
-            emb_depth = self.merge_conv_d(pred_2x)
-            emb_plane = self.merge_conv_p(planar_depth_2x)
-            refined_planar_2x = self.merge_conv(torch.cat((emb_depth, emb_plane), dim=1))
+            # emb_depth = self.merge_conv_d(pred_2x)
+            # emb_plane = self.merge_conv_p(planar_depth_2x)
+            # refined_planar_2x = self.merge_conv(torch.cat((emb_depth, emb_plane), dim=1))
+
             # refined_planar_2x = planar_depth_2x
-            upsampled_planar_depth = F.interpolate(refined_planar_2x, scale_factor=2,
+            upsampled_planar_depth = F.interpolate(planar_depth_2x, scale_factor=2,
                                                    mode="bilinear")
             outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
 
@@ -1103,11 +1108,13 @@ class DoubleBranchNet(nn.Module):
 
 
 class FilterBlock(nn.Module):
-    def __init__(self, in_channels, reflection_pad=False):
+    def __init__(self, in_channels, reflection_pad=False, group_norm=True):
         super(FilterBlock, self).__init__()
         self.block = nn.Sequential(
-            ConvELUBlock(in_channels, 64, 5, padding=2, reflection_pad=reflection_pad),
-            ConvELUBlock(64, 32, 1, padding=0, reflection_pad=reflection_pad),
+            ConvELUBlock(in_channels, 64, 5, padding=2,
+                         reflection_pad=reflection_pad, group_norm=group_norm),
+            ConvELUBlock(64, 32, 1, padding=0,
+                         reflection_pad=reflection_pad, group_norm=group_norm),
             nn.Conv2d(32, 1, 3, padding=1)
         )
 
@@ -1167,7 +1174,8 @@ class ConvELUBlock(nn.Module):
                  stride=1,
                  padding=0,
                  dilation=1,
-                 reflection_pad=False):
+                 reflection_pad=False,
+                 group_norm=True):
         super(ConvELUBlock, self).__init__()
         self.reflection_pad = reflection_pad
         self.padding = padding
@@ -1182,13 +1190,17 @@ class ConvELUBlock(nn.Module):
             stride=stride,
             padding=self.padding,
             dilation=dilation)
-        self.norm = nn.GroupNorm(num_groups=out_channels // 2, num_channels=out_channels)
+        self.group_norm = group_norm
+        if self.group_norm:
+            self.norm = nn.GroupNorm(num_groups=out_channels // 2, num_channels=out_channels)
 
     def forward(self, x):
         if self.reflection_pad:
             x = self.padding_l(x)
-        return F.elu(self.norm(self.conv(x)), inplace=True)
-        # return F.elu(self.conv(x), inplace=True)
+        if self.group_norm:
+            return F.elu(self.norm(self.conv(x)), inplace=True)
+        else:
+            return F.elu(self.conv(x), inplace=True)
 
 
 class UpsampleShuffleBlock(nn.Module):

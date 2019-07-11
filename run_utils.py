@@ -24,8 +24,13 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
     depth_transformer = dataset.default_depth_transformer
 
     model_opts = parseModelOpts(args.model_opts, rectnet_ops)
-    # UResNet
-    if network_type == 'UResNet':
+
+    if network_type == 'Omnidepth':
+        model_opts["use_group_norm"] = False
+        model = RectNet(in_channels, ops=model_opts)
+        alpha_list = [0.535, 0.272]
+        beta_list = [0.134, 0.068, ]
+    elif network_type == 'UResNet':
         model = UResNet(in_channels)
         alpha_list = [0.445, 0.275, 0.13]
         beta_list = [0.15, 0., 0.]

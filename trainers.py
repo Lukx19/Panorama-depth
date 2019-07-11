@@ -11,9 +11,10 @@ from metrics import (abs_rel_error, delta_inlier_ratio,
                      lin_rms_sq_error, log_rms_sq_error,
                      sq_rel_error, directed_depth_error,
                      depth_boundary_error, planarity_errors,
-                     delta_normal_angle_ratio, normal_stats, distance_to_plane, direct_depth_accuracy)
+                     delta_normal_angle_ratio, normal_stats, distance_to_plane,
+                     direct_depth_accuracy)
 
-from util import (saveTensorDepth, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
+from util import (saveTensorTiff, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
                   stackVerticaly, heatmapGrid, pytorchDetachedProcess, linePlot)
 from network import toPlaneParams, DepthToNormals
 import torchvision.transforms as Tt
@@ -222,6 +223,7 @@ def save_saples_for_pcl(data, outputs, results_dir):
     # print(outputs)
     d = data
     o = outputs.get(DataType.Depth, scale=1)[0].cpu()
+    normals = outputs.get(DataType.Normals, scale=1)
 
     batch_size, _, _, _ = o.size()
     # print(batch_size)
@@ -236,17 +238,26 @@ def save_saples_for_pcl(data, outputs, results_dir):
 
         gt = d.get(DataType.Depth, scale=1)
         if len(gt):
-            saveTensorDepth(name + "_gt_depth", gt[0][i], 1)
-        saveTensorDepth(name + "_pred_depth", prediction, 1)
+            saveTensorTiff(name + "_gt_depth", gt[0][i],)
+        saveTensorTiff(name + "_pred_depth", prediction,)
 
         sparse_points = d.get(DataType.SparseDepth, scale=1)
         if len(sparse_points) > 0:
             sparse_points = sparse_points[0][i]
-            saveTensorDepth(name + "_sparse_depth",
-                            sparse_points, unnorm_depth)
+            saveTensorTiff(name + "_sparse_depth",
+                           sparse_points * unnorm_depth)
 
         color_img = Tt.functional.to_pil_image(img.cpu())
         color_img.save(name + "_color.jpg")
+
+        if len(normals) > 0:
+            normals_i = normals[0][i].cpu()
+            normals_i = util.makeUnitVecotr(normals_i)
+            saveTensorTiff(name + "_pred_normals",
+                           normals_i)
+            gt_normals = d.get(DataType.Normals, scale=1)[0][0].cpu()
+            saveTensorTiff(name + "_gt_normals",
+                           gt_normals)
 
         # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
 
@@ -708,17 +719,15 @@ class MonoTrainer(object):
             dd2_plane = direct_depth_accuracy(depth_pred, gt_depth, plane_mask, thr=0.2)
 
         if len(gt_normals) > 0 and len(pred_normals) > 0:
-            # if len(gt_planes) > 0:
-            #     normal_mask = plane_mask
-            # else:
             normal_mask = depth_mask
-            norm1 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+            pred_normals0 = util.makeUnitVecotr(pred_normals[0])
+            norm1 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=11.25)
-            norm2 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+            norm2 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=22.5)
-            norm3 = delta_normal_angle_ratio(pred_normals[0], gt_normals[0],
+            norm3 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=30)
-            norm_mean, norm_median = normal_stats(pred_normals[0], gt_normals[0], normal_mask)
+            norm_mean, norm_median = normal_stats(pred_normals0, gt_normals[0], normal_mask)
         # pe_flat, orient_err = planarity_errors(depth_pred, gt_normals, planes, mask)
         if len(sparse_pts) > 0:
             sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
@@ -1001,6 +1010,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     gt_normals = data.get(DataType.Normals, scale=1)
     if len(pred_normals) > 0 and len(gt_normals) > 0:
         pred_normals = pred_normals[0][0].cpu().detach()
+        pred_normals = util.makeUnitVecotr(pred_normals)
         pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
         gt_normals = gt_normals[0][0].cpu().detach()
         gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
@@ -1072,6 +1082,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pred_normals = output.get(DataType.Normals, scale=1)
     if len(pred_normals) > 0:
         pred_normals = pred_normals[0][0].cpu().detach()
+        pred_normals = util.makeUnitVecotr(pred_normals)
         pred_normals = torch.squeeze(pred_normals.permute(1, 2, 0)).numpy()
     else:
         pred_normals = None
@@ -1101,6 +1112,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pred_normals2x = output.get(DataType.Normals, scale=2)
     if len(pred_normals2x) > 0:
         pred_normals2x = pred_normals2x[0][0].cpu().detach()
+        pred_normals2x = util.makeUnitVecotr(pred_normals2x)
         pred_normals2x = torch.squeeze(pred_normals2x.permute(1, 2, 0)).numpy()
         normals2x = np.reshape(pred_normals, (-1, 3))
     else:
