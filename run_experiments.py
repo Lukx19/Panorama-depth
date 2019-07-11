@@ -35,16 +35,17 @@ def main():
         print("Directory: {} does not exist.".format(args.experiments_folder))
         return
 
-    args_files = sorted(glob.glob(args.experiments_folder + '/**/test_args.txt', recursive=True))
+    args_files = sorted(glob.glob(args.experiments_folder + '/**/commandline_args.txt', recursive=True))
     experiments = []
     for args_file in tqdm(args_files):
-        test_results_folder, _ = osp.split(args_file)
-        experiment_folder, _ = osp.split(test_results_folder)
+        experiment_folder, _ = osp.split(args_file)
+        test_results_folder = osp.join(experiment_folder, "results")
         _, experiment_name = osp.split(experiment_folder)
         # print(args_file, test_results_folder, experiment_folder, experiment_name)
         if args.run_test:
             with open(args_file, "r") as f:
                 test_args = json.load(f)
+            test_args["checkpoint"] = None
             test_args["test_list"] = args.test_list
             test_args["save_results"] = args.save_results
             test_args["dataset_dir"] = args.dataset_dir
@@ -53,8 +54,8 @@ def main():
             test_args["load_normals"] = True
             test_args["load_planes"] = True
             report = test.test(args=SimpleNamespace(**test_args))
-            # if args.save_results:
-            #     visualizations.visualizePclDepth(test_results_folder)
+            if args.save_results:
+                visualizations.visualizePclDepth(test_results_folder)
         else:
             with open(osp.join(test_results_folder, "metrics.txt"), "r") as f:
                 report = json.load(f)
