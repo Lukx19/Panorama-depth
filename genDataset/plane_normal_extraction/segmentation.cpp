@@ -3,6 +3,7 @@
 #include <math.h>
 #include <pcl/ModelCoefficients.h>
 #include <pcl/features/normal_3d.h>
+#include <pcl/features/principal_curvatures.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/io/ply_io.h>
 #include <pcl/point_cloud.h>
@@ -14,18 +15,19 @@
 #include <vector>
 #define cimg_display 0
 #define cimg_use_tiff
+#define cimg_use_png
 #include "CImg.h"
 
 struct PointXYZLUV {
-  PCL_ADD_POINT4D;  // preferred way of adding a XYZ+padding
+  PCL_ADD_POINT4D; // preferred way of adding a XYZ+padding
   float label;
   float u;
   float v;
-  EIGEN_MAKE_ALIGNED_OPERATOR_NEW  // make sure our new allocators are aligned
-} EIGEN_ALIGN16;  // enforce SSE padding for correct memory alignment
+  EIGEN_MAKE_ALIGNED_OPERATOR_NEW // make sure our new allocators are aligned
+} EIGEN_ALIGN16; // enforce SSE padding for correct memory alignment
 
 POINT_CLOUD_REGISTER_POINT_STRUCT(
-    PointXYZLUV,  // here we assume a XYZ + "test" (as fields)
+    PointXYZLUV, // here we assume a XYZ + "test" (as fields)
     (float, x, x)(float, y, y)(float, z, z)(float, label,
                                             label)(float, u, u)(float, v, v))
 
@@ -33,16 +35,16 @@ using namespace cimg_library;
 
 double _max_distance = 0.04;
 float _min_percentage = 5;
-double normal_radius_search = 0.09;  // 9cm
+double normal_radius_search = 0.09; // 9cm
 size_t max_planes = 5;
 
 class Color {
- private:
+private:
   uint8_t r;
   uint8_t g;
   uint8_t b;
 
- public:
+public:
   Color(uint8_t R, uint8_t G, uint8_t B) : r(R), g(G), b(B) {}
 
   void getColor(uint8_t &R, uint8_t &G, uint8_t &B) {
@@ -65,7 +67,7 @@ auto createColors(size_t n_colors) -> std::vector<Color> {
   uint8_t g = 0;
   uint8_t b = 0;
   std::vector<Color> colors;
-  for (int i = 0; i < n_colors; i++) {
+  for (size_t i = 0; i < n_colors; i++) {
     while (r < 70 && g < 70 && b < 70) {
       r = rand() % (255);
       g = rand() % (255);
@@ -100,7 +102,7 @@ void savePlanePcl(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
 
 void savePclNormals(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
                     const pcl::PointCloud<pcl::Normal>::Ptr &normals,
-                    const std::string &fname) {
+                    const std::string &fname, size_t n_planes) {
   std::vector<Color> colors = createColors(max_planes);
   pcl::PointCloud<pcl::PointXYZRGBNormal>::Ptr cloud_pub(
       new pcl::PointCloud<pcl::PointXYZRGBNormal>);
@@ -121,29 +123,49 @@ void savePclNormals(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
   pcl::io::savePLYFileASCII<pcl::PointXYZRGBNormal>(fname, *cloud_pub);
 }
 
-void savePlaneMasksTiff(const std::string &filename,
+void savePlaneMask(const std::string &filename,
                         const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
-                        size_t width, size_t height, size_t n_planes) {
-  CImg<float> planes(width, height, 1, n_planes, 0.f);
+                        size_t width, size_t height) {
+  CImg<uint32_t> planes(width, height, 1, 1, 0.f);
   for (const PointXYZLUV &pt : cloud->points) {
-    planes(pt.u, pt.v, 0, pt.label) = 1.f;
+    // cloud contains only planes labeled from 0.
+    // The resulting picture expect label 0 as sign of "no plane detected"
+    planes(pt.u, pt.v, 0, 0) = static_cast<uint32_t>(pt.label + 1);
   }
-  planes.save_tiff(filename.c_str(), 1);
+  planes.save_png(filename.c_str());
 }
 
-void saveNormalsTiff(const std::string &filename,
-                     const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
-                     const pcl::PointCloud<pcl::Normal>::Ptr &normals,
-                     size_t width, size_t height) {
-  CImg<float> normals_img(width, height, 1, 3, 0.f);
+void saveNormals(const std::string &filename,
+                 const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
+                 const pcl::PointCloud<pcl::Normal>::Ptr &normals, size_t width,
+                 size_t height) {
+
+  CImg<uint8_t> normals_img(width, height, 1, 3, 0.f);
   for (size_t i = 0; i < cloud->points.size(); ++i) {
     PointXYZLUV pt = cloud->at(i);
     pcl::Normal normal = normals->at(i);
-    normals_img(pt.u, pt.v, 0, 0) = normal.normal_x;
-    normals_img(pt.u, pt.v, 0, 1) = normal.normal_y;
-    normals_img(pt.u, pt.v, 0, 2) = normal.normal_z;
+    normals_img(pt.u, pt.v, 0, 0) =
+        static_cast<uint8_t>(std::truncf(normal.normal_x * 127.5 + 127.5));
+    normals_img(pt.u, pt.v, 0, 1) =
+      static_cast<uint8_t>(std::truncf(normal.normal_y * 127.5 + 127.5));
+    normals_img(pt.u, pt.v, 0, 2) =
+      static_cast<uint8_t>(std::truncf(normal.normal_z * 127.5 + 127.5));
   }
-  normals_img.save_tiff(filename.c_str(), 1);
+  normals_img.save_png(filename.c_str(), 1);
+}
+
+void saveCurvature(
+    const std::string &filename, const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
+    const pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr &curvature,
+    size_t width, size_t height) {
+  CImg<float> curvature_img(width, height, 1, 2, 0.f);
+  for (size_t i = 0; i < cloud->points.size(); ++i) {
+    PointXYZLUV pt = cloud->at(i);
+    pcl::PrincipalCurvatures c_i = curvature->at(i);
+    curvature_img(pt.u, pt.v, 0, 0) = c_i.principal_curvature_x;
+    curvature_img(pt.u, pt.v, 0, 1) = c_i.principal_curvature_y;
+  }
+  curvature_img.save_tiff(filename.c_str(), 1);
 }
 
 auto convertToPcl(const std::string &tiff_file)
@@ -219,7 +241,8 @@ auto estimatePlanes(const pcl::PointCloud<PointXYZLUV>::ConstPtr &cloud_in,
     seg.segment(*inliers, *coefficients);
 
     // Check result
-    if (inliers->indices.size() == 0) break;
+    if (inliers->indices.size() == 0)
+      break;
 
     for (size_t i = 0; i < inliers->indices.size(); i++) {
       PointXYZLUV new_pt = cloud->points[inliers->indices[i]];
@@ -315,6 +338,34 @@ auto estimateNormals(const pcl::PointCloud<PointXYZLUV>::ConstPtr &cloud_in)
   return cloud_normals;
 }
 
+auto estimateCurvature(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
+                       const pcl::PointCloud<pcl::Normal>::Ptr &normals)
+    -> pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr {
+  pcl::PrincipalCurvaturesEstimation<PointXYZLUV, pcl::Normal,
+                                     pcl::PrincipalCurvatures>
+      principal_curvatures_estimation;
+
+  // Provide the original point cloud (without normals)
+  principal_curvatures_estimation.setInputCloud(cloud);
+
+  // Provide the point cloud with normals
+  principal_curvatures_estimation.setInputNormals(normals);
+
+  pcl::search::KdTree<PointXYZLUV>::Ptr tree(
+      new pcl::search::KdTree<PointXYZLUV>());
+
+  // Use the same KdTree from the normal estimation
+  principal_curvatures_estimation.setSearchMethod(tree);
+  principal_curvatures_estimation.setKSearch(20);
+
+  pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr curvature(
+      new pcl::PointCloud<pcl::PrincipalCurvatures>());
+
+  // Actually compute the principal curvatures
+  principal_curvatures_estimation.compute(*curvature);
+  return curvature;
+}
+
 int main(int argc, char *argv[]) {
   std::string fname = "default.tiff";
   if (argc > 1) {
@@ -327,8 +378,13 @@ int main(int argc, char *argv[]) {
   }
   std::string planes_fname = fname;
   std::string normals_fname = fname;
+  std::string curvature_fname = fname;
   planes_fname.replace(start_name, 7, "_planes_");
   normals_fname.replace(start_name, 7, "_normals_");
+  curvature_fname.replace(start_name, 7, "_curvature_");
+
+  normals_fname.replace(normals_fname.end()-4,normals_fname.end(),"png");
+  planes_fname.replace(planes_fname.end()-4,planes_fname.end(),"png");
 
   size_t width;
   size_t height;
@@ -336,12 +392,19 @@ int main(int argc, char *argv[]) {
   pcl::PointCloud<PointXYZLUV>::Ptr cloud;
   pcl::PointCloud<PointXYZLUV>::Ptr planes_cloud;
   pcl::PointCloud<pcl::Normal>::Ptr normals;
+  pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr curvature;
+
   std::tie(width, height, cloud) = convertToPcl(fname);
+
   normals = estimateNormals(cloud);
-  // savePclNormals(cloud, normals, fname + "normals.ply");
-  saveNormalsTiff(normals_fname, cloud, normals, width, height);
+  saveNormals(normals_fname, cloud, normals, width, height);
+
+  // curvature = estimateCurvature(cloud, normals);
+  // saveCurvature(curvature_fname, cloud, curvature, width, height);
   // std::tie(n_planes, planes_cloud) = estimatePlanes(cloud, normals);
+
   std::tie(n_planes, planes_cloud) = estimatePlanesGrow(cloud, normals);
+  savePlaneMask(planes_fname, planes_cloud, width, height);
   // savePlanePcl(planes_cloud, n_planes, planes_fname + ".ply");
-  savePlaneMasksTiff(planes_fname, planes_cloud, width, height, n_planes);
+  // savePclNormals(planes_cloud, normals, planes_fname + ".ply", n_planes);
 }
