@@ -62,9 +62,11 @@ def main():
     print("* 360D filenames file generator *")
     if args.default:
         dataDirectories = [
-            '../../datasets/Matterport/',
-            '../../datasets/Stanford/',
-            '../../datasets/SunCG',
+            # '../../datasets/Matterport/',
+            # '../../datasets/Stanford/',
+            # '../../datasets/SunCG',
+            "../../../datasets/Panodepth/Stanford"
+
         ]
         #  use for validation:
         # '../../datasets/SceneNet',
@@ -79,7 +81,8 @@ def main():
     data = dataset.Dataset(name, mode, dataDirectories, filenamesDir, name)
     data.gatherFiles()
     data.printCountSummary()
-    data.removeOutliers()
+    # data.removeOutliers()
+    data.useAllData()
     data.splitFiles()
     data.printFileSummary()
     data.createFiles()

@@ -1,9 +1,12 @@
 import numpy as np
 import findOutliers as outliers
 import os
-import cv2
+import os.path as osp
+# import cv2
 from enum import Enum
 import random
+from glob import glob
+from skimage import io
 
 
 class Dataset:
@@ -51,7 +54,7 @@ class Dataset:
         #     "edb61af9bebd428aa21a59c4b2597b201"
         # ]
         self.ignoreList = [
-            "area3",                                # Stanford
+            "area_3",                                # Stanford
             "fa5f164b48f043c6b2b0bb9e8631a4821",    # Matterport
             "a641c3f4647545a2a4f5c50f5f5fbb571",    # Matterport
             "e0166dba74ee42fd80fccc26fe3f02c81",    # Matterport
@@ -72,71 +75,67 @@ class Dataset:
             filenamesFileDirectory, filenamesFileName + "_validation.txt")
         if (mode == "Mono" or mode == "SparsePts"):
             self.mode = self.Mode.Mono
-            self.pairIds.append("_Left")
-            self.dataDict["_Left_color"] = []
-            self.dataDict["_Left_depth"] = []
-            self.dataDict["_Left_normals"] = []
+            self.pairIds.append("")
+            self.dataset_paths = []
+            self.good_dataset_paths = []
+            self.train_dataset_paths = []
+            self.test_dataset_paths = []
+            self.validate_dataset_paths = []
 
-            self.goodDataDict["_Left_color"] = []
-            self.goodDataDict["_Left_depth"] = []
-            self.goodDataDict["_Left_normals"] = []
+            self.dataDict["_color"] = []
+            self.dataDict["_depth"] = []
+            # self.dataDict["_normals"] = []
 
-            self.trainDict["_Left_color"] = []
-            self.trainDict["_Left_depth"] = []
-            self.trainDict["_Left_normals"] = []
+            self.goodDataDict["_color"] = []
+            self.goodDataDict["_depth"] = []
+            # self.goodDataDict["_normals"] = []
 
-            self.testDict["_Left_color"] = []
-            self.testDict["_Left_depth"] = []
-            self.testDict["_Left_normals"] = []
+            self.trainDict["_color"] = []
+            self.trainDict["_depth"] = []
+            # self.trainDict["_normals"] = []
 
-            self.validDict["_Left_color"] = []
-            self.validDict["_Left_depth"] = []
-            self.validDict["_Left_normals"] = []
+            self.testDict["_color"] = []
+            self.testDict["_depth"] = []
+            # self.testDict["_normals"] = []
+
+            self.validDict["_color"] = []
+            self.validDict["_depth"] = []
+            # self.validDict["_normals"] = []
 
         if mode == "SparsePts":
             self.mode = self.Mode.SparsePoints
-            self.dataDict["_Left_points"] = []
-            self.goodDataDict["_Left_points"] = []
-            self.trainDict["_Left_points"] = []
-            self.testDict["_Left_points"] = []
-            self.validDict["_Left_points"] = []
+            self.dataDict["_points"] = []
+            self.goodDataDict["_points"] = []
+            self.trainDict["_points"] = []
+            self.testDict["_points"] = []
+            self.validDict["_points"] = []
 
         self.dataDirs = datasetDirectories
 
     def gatherFiles(self):
         print("Gathering filepaths...")
-        for dataDir in self.dataDirs:
-            if (not os.path.exists(dataDir)):
-                print("Directory: {} does not exist. Skipping.".format(dataDir))
-                continue
-            filesList = sorted(os.listdir(dataDir))
-            for filepath in filesList:
-                for pairID in self.pairIds:
-                    if pairID in filepath:
-                        if "_color_" in filepath and ".png" in filepath:
-                            keyType = pairID + "_color"
-                            self.dataDict[keyType].append(
-                                os.path.join(dataDir, filepath))
-                        elif "_depth_" in filepath and ".exr" in filepath:
-                            keyType = pairID + "_depth"
-                            self.dataDict[keyType].append(
-                                os.path.join(dataDir, filepath))
-                        elif "_points_" in filepath and ".exr" in filepath and self.mode == self.Mode.SparsePoints:
-                            keyType = pairID + "_points"
-                            self.dataDict[keyType].append(
-                                os.path.join(dataDir, filepath))
-                        # elif "_normal_" in filepath and ".exr" in filepath:
-                        #     keyType = pairID + "_normals"
-                        #     self.dataDict[keyType].append(os.path.join(dataDir, filepath))
+        for data_dir in self.dataDirs:
+            dataset_folder, dataset_name = osp.split(data_dir)
+            dir_name_length = len(dataset_folder) + 1
+            color_files = sorted(glob(data_dir + '/**/*_color_*.png', recursive=True))
+            depth_files = sorted(glob(data_dir + '/**/*_depth_*.tiff', recursive=True))
+            for color_file, depth_file in zip(color_files, depth_files):
+                self.dataDict["_color"].append(color_file[dir_name_length:])
+                self.dataDict["_depth"].append((dataset_folder, depth_file[dir_name_length:]))
+
+            if self.mode == self.Mode.SparsePoints:
+                pts_files = sorted(glob(data_dir + '/**/*_points_*.tiff', recursive=True))
+                for pts_file in pts_files:
+                    self.dataDict["_points"].append(pts_file[dir_name_length:])
 
     def calcTotalCount(self):
         self.count = 0
         if (self.mode == self.Mode.Mono):
-            self.count += len(self.dataDict["_Left_color"]) + \
-                len(self.dataDict["_Left_depth"])
+            self.count += len(self.dataDict["_color"]) + \
+                len(self.dataDict["_depth"])
         elif self.mode == self.Mode.SparsePoints:
-            self.count += len(self.dataDict["_Left_color"]) + len(
-                self.dataDict["_Left_depth"]) + len(self.dataDict["_Left_points"])
+            self.count += len(self.dataDict["_color"]) + len(
+                self.dataDict["_depth"]) + len(self.dataDict["_points"])
 
     def printCountSummary(self):
         print("Dataset {} Summary:".format(self.name))
@@ -164,10 +163,10 @@ class Dataset:
 
     def getZippedData(self, dictionary):
         if self.mode == self.Mode.Mono:
-            zipped = zip(dictionary["_Left_color"], dictionary["_Left_depth"])
+            zipped = zip(dictionary["_color"], dictionary["_depth"])
         else:
             zipped = zip(
-                dictionary["_Left_color"], dictionary["_Left_depth"], dictionary["_Left_points"])
+                dictionary["_color"], dictionary["_depth"], dictionary["_points"])
         return zipped
 
     def removeOutliers(self):
@@ -175,34 +174,43 @@ class Dataset:
         # Monocular Mode
         if self.mode == self.Mode.Mono or self.mode == self.Mode.SparsePoints:
             for data in self.getZippedData(self.dataDict):
-                depthMap = cv2.imread(data[1], cv2.IMREAD_ANYDEPTH)
+                depthMap = io.imread(osp.join(*data[1]))
+
                 if self.outCondition(depthMap):
                     print("File pair:\n[\t{}\n\t{}\n]is OUT.".format(
-                        os.path.basename(data[0]), os.path.basename(data[1])))
+                        os.path.basename(data[0]), os.path.basename(data[1][1])))
                 else:
-                    self.goodDataDict["_Left_color"].append(data[0])
-                    self.goodDataDict["_Left_depth"].append(data[1])
+                    self.goodDataDict["_color"].append(data[0])
+                    self.goodDataDict["_depth"].append(data[1][1])
+
                     if self.mode == self.Mode.SparsePoints:
-                        self.goodDataDict["_Left_points"].append(data[2])
+                        self.goodDataDict["_points"].append(data[2])
+
+    def useAllData(self):
+        for data in self.getZippedData(self.dataDict):
+            self.goodDataDict["_color"].append(data[0])
+            self.goodDataDict["_depth"].append(data[1][1])
+            if self.mode == self.Mode.SparsePoints:
+                self.goodDataDict["_points"].append(data[2])
 
     # Splits to Train and Test Dictionaries
     def splitFiles(self):
         for data in self.getZippedData(self.goodDataDict):
             if any(hash in data[0] for hash in self.ignoreList):
-                self.testDict["_Left_color"].append(data[0])
-                self.testDict["_Left_depth"].append(data[1])
+                self.testDict["_color"].append(data[0])
+                self.testDict["_depth"].append(data[1])
                 if self.mode == self.Mode.SparsePoints:
-                    self.testDict["_Left_points"].append(data[2])
+                    self.testDict["_points"].append(data[2])
             elif any(hash in data[0] for hash in self.validationList):
-                self.validDict["_Left_color"].append(data[0])
-                self.validDict["_Left_depth"].append(data[1])
+                self.validDict["_color"].append(data[0])
+                self.validDict["_depth"].append(data[1])
                 if self.mode == self.Mode.SparsePoints:
-                    self.validDict["_Left_points"].append(data[2])
+                    self.validDict["_points"].append(data[2])
             else:
-                self.trainDict["_Left_color"].append(data[0])
-                self.trainDict["_Left_depth"].append(data[1])
+                self.trainDict["_color"].append(data[0])
+                self.trainDict["_depth"].append(data[1])
                 if self.mode == self.Mode.SparsePoints:
-                    self.trainDict["_Left_points"].append(data[2])
+                    self.trainDict["_points"].append(data[2])
 
     # creates files
     def createFiles(self):
@@ -253,6 +261,6 @@ class Dataset:
         for dataDir in self.dataDirs:
             print("\t {}".format(dataDir))
         print(
-            "Number of file-pairs in train-set: {}".format(len(self.trainDict["_Left_color"])))
+            "Number of file-pairs in train-set: {}".format(len(self.trainDict["_color"])))
         print(
-            "Number of file-pairs in test-set : {}".format(len(self.testDict["_Left_color"])))
+            "Number of file-pairs in test-set : {}".format(len(self.testDict["_color"])))
