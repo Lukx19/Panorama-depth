@@ -144,9 +144,13 @@ def write_tiff(image_fpath, data):
 
 
 def saveTensorTiff(filename, tensor):
-    img = tensor.cpu().numpy()
+    img = tensor.cpu()
+    if len(tensor.size()) == 4:
+        img = img[0]
+    img = img.numpy()
     img = np.squeeze(img)
-    # img = np.transpose(img, (1, 2, 0))
+    if len(img.shape) == 3:
+        img = np.transpose(img, (1, 2, 0))
     # print(img.shape)
     write_tiff(filename, img)
     # img = Tt.functional.to_pil_image(img)
@@ -472,14 +476,14 @@ def onehottify(x, n=None):
     return onehot
 
 
-def makeUnitVecotr(tensor):
+def makeUnitVector(tensor, eps=1e-5):
     if len(tensor.size()) == 3:
         ch, h, w = tensor.size()
         dim = 0
     else:
         b, ch, h, w = tensor.size()
         dim = 1
-    norm = torch.norm(tensor, p=None, dim=dim, keepdim=True)
-    norm = torch.max(norm, torch.ones_like(norm) * 1e-5)
+    norm = torch.norm(tensor.detach(), p=None, dim=dim, keepdim=True)
+    norm = torch.max(norm, torch.ones_like(norm) * eps)
     unit_vec = tensor / norm
     return unit_vec

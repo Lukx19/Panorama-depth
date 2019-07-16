@@ -430,6 +430,10 @@ class RectNet(nn.Module):
             self.calc_planes = False
             self.calc_segmentation = True
 
+        if not self.calc_planes and not self.normal_smoothing:
+            self.fusion_merge = False
+            self.calc_merge_guidance = False
+
         self.normals_type = normals_est_type
         if self.calc_normals or self.calc_norm_seg_2x:
             self.decoder1_normal = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
@@ -576,7 +580,7 @@ class RectNet(nn.Module):
 
         normals_2x = None
         seg_2x = None
-
+        mask = inputs[DataType.Mask]
         if self.calc_normals:
             #  1. calculate normals with decoder from in 1x resolution
             normals_input = self.decoder1_normal(decoder1_0_out)
@@ -606,11 +610,14 @@ class RectNet(nn.Module):
         if self.normal_smoothing:
             # 3. smooth depth based on normals
             with torch.no_grad():
+                mask2x = F.interpolate(mask, scale_factor=0.5, mode="nearest")
                 hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
                                        torch.zeros_like(seg_2x))
                 # hard_seg = torch.ones_like(seg_2x)
                 hard_seg[:, :, 0:10, :] = 0
                 hard_seg[:, :, -10:, :] = 0
+                hard_seg = hard_seg * mask2x
+
                 points_2x = self.to3d_2x(pred_2x.detach())
                 outputs["pcl2x"].append(points_2x)
                 smooth_pts = points_2x * hard_seg

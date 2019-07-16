@@ -175,7 +175,10 @@ def parse_data(raw_data):
         data.add(mask_2x, DataType.Mask, scale=2)
         data.add(mask_4x, DataType.Mask, scale=4)
 
-    inputs = {DataType.Image: rgb}
+    inputs = {
+        DataType.Image: rgb,
+        DataType.Mask: mask_1x,
+    }
     planes = data.get(DataType.Planes, scale=1)
     if len(planes):
         inputs[DataType.Planes] = planes[0]
@@ -224,6 +227,7 @@ def save_saples_for_pcl(data, outputs, results_dir):
     d = data
     o = outputs.get(DataType.Depth, scale=1)[0].cpu()
     normals = outputs.get(DataType.Normals, scale=1)
+    # mask = data.get(DataType.Mask, scale=1)
 
     batch_size, _, _, _ = o.size()
     # print(batch_size)
@@ -252,12 +256,14 @@ def save_saples_for_pcl(data, outputs, results_dir):
 
         if len(normals) > 0:
             normals_i = normals[0][i].cpu()
-            normals_i = util.makeUnitVecotr(normals_i)
+            normals_i = util.makeUnitVector(normals_i)
             saveTensorTiff(name + "_pred_normals",
                            normals_i)
-            gt_normals = d.get(DataType.Normals, scale=1)[0][0].cpu()
-            saveTensorTiff(name + "_gt_normals",
-                           gt_normals)
+            gt_normals = d.get(DataType.Normals, scale=1)
+            if len(gt_normals) > 0:
+                gt_normals = gt_normals[0][0].cpu()
+                saveTensorTiff(name + "_gt_normals",
+                               gt_normals)
 
         # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
 
@@ -636,7 +642,7 @@ class MonoTrainer(object):
             # make sure that validation is correct without bugs
 
         self.validate()
-        self.visualize_metrics(save_to_disk=False)
+        # self.visualize_metrics(save_to_disk=False)
         print('Starting training')
         # Train for specified number of epochs
         for self.epoch in range(self.epoch, self.num_epochs):
@@ -720,7 +726,7 @@ class MonoTrainer(object):
 
         if len(gt_normals) > 0 and len(pred_normals) > 0:
             normal_mask = depth_mask
-            pred_normals0 = util.makeUnitVecotr(pred_normals[0])
+            pred_normals0 = util.makeUnitVector(pred_normals[0])
             norm1 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=11.25)
             norm2 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
@@ -919,7 +925,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
 
     depth_mask = data.get(DataType.Mask, scale=1)[0][0].cpu().detach()
     pred_depth = output.get(DataType.Depth, scale=1)[0][0].cpu().detach()
-    pred_depth *= depth_mask
+    # pred_depth *= depth_mask
     pred_depth = pred_depth.squeeze().flip(0).numpy()
 
     gt_depth = data.get(DataType.Depth, scale=1)[0][0]
@@ -1010,7 +1016,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     gt_normals = data.get(DataType.Normals, scale=1)
     if len(pred_normals) > 0 and len(gt_normals) > 0:
         pred_normals = pred_normals[0][0].cpu().detach()
-        pred_normals = util.makeUnitVecotr(pred_normals)
+        pred_normals = util.makeUnitVector(pred_normals)
         pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
         gt_normals = gt_normals[0][0].cpu().detach()
         gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
@@ -1082,7 +1088,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pred_normals = output.get(DataType.Normals, scale=1)
     if len(pred_normals) > 0:
         pred_normals = pred_normals[0][0].cpu().detach()
-        pred_normals = util.makeUnitVecotr(pred_normals)
+        pred_normals = util.makeUnitVector(pred_normals)
         pred_normals = torch.squeeze(pred_normals.permute(1, 2, 0)).numpy()
     else:
         pred_normals = None
@@ -1112,7 +1118,7 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
     pred_normals2x = output.get(DataType.Normals, scale=2)
     if len(pred_normals2x) > 0:
         pred_normals2x = pred_normals2x[0][0].cpu().detach()
-        pred_normals2x = util.makeUnitVecotr(pred_normals2x)
+        pred_normals2x = util.makeUnitVector(pred_normals2x)
         pred_normals2x = torch.squeeze(pred_normals2x.permute(1, 2, 0)).numpy()
         normals2x = np.reshape(pred_normals, (-1, 3))
     else:

@@ -5,7 +5,7 @@ import numpy as np
 from annotated_data import DataType, Annotation
 from network import planeAwarePooling, toPlaneParams, signToLabel, DepthToNormals
 from modules import Depth2Points
-from util import mergeInDict
+from util import mergeInDict, makeUnitVector
 
 
 class Sobel(nn.Module):
@@ -303,7 +303,7 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     validMean = createValidMean(mask, adaptive=False)
     #  L1 loss on depth distances
     loss_depth = torch.log(l1Loss(pred, gt) + 1)
-    histograms["revis_l1_dist"] = loss_depth.detach()
+    histograms["revis_l1_dist"] = loss_depth.detach().clone() * mask
     # loss_depth = huberLoss(pred, gt, mask)
     # histograms["revis_huber_dist"] = loss_depth.detach()
     loss_depth = validMean(loss_depth)
@@ -311,18 +311,19 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     validMean = createValidMean(mask, adaptive=adaptive)
     loss_dx = torch.log(l1Loss(output_grad_dx, depth_grad_dx) + 1)
     loss_dy = torch.log(l1Loss(output_grad_dy, depth_grad_dy) + 1)
-    histograms["revis_dxdy"] = (loss_dx + loss_dy).detach()
+    histograms["revis_dxdy"] = (loss_dx + loss_dy).detach().clone() * mask
     loss_dx = validMean(loss_dx)
     loss_dy = validMean(loss_dy)
+
     loss_normal = cosineLoss(output_normal, depth_normal, dim=1, mean_fce=None)
-    histograms["revis_normal_similarity"] = loss_normal.detach()
+    histograms["revis_normal_similarity"] = loss_normal.detach().clone() * mask
     loss_normal = validMean(loss_normal)
     # print(loss_depth, loss_normal, loss_dx, loss_dy)
     losses = {
         "revis_l1_dist": loss_depth,
         # "revis_huber_dist": loss_depth,
-        "revis_dxdy": loss_normal,
-        "revis_normal_similarity": loss_dx + loss_dy
+        "revis_dxdy": loss_dx + loss_dy,
+        "revis_normal_similarity": loss_normal,
     }
     return losses, histograms
 
@@ -530,6 +531,7 @@ class PlanarLoss(nn.Module):
         gt_depth = data.get(DataType.Depth, scale=1)[0] * mask
         gt_normals = data.get(DataType.Normals)[0] * mask
         pred_normals = predictions.get(DataType.Normals)[0] * mask
+
         # print(torch.sum(plane_mask), torch.sum(gt_seg), torch.sum(mask))
         b, ch, h, w = pred_normals.size()
 
@@ -554,6 +556,17 @@ class PlanarLoss(nn.Module):
         losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
         # planeMean = createPlaneMean(mask, planes, adaptive=True)
         # losses["Plane_dist_plane_loss_Ad"] = planeMean(distace_to_gt_plane)
+
+        distance_btw_planes = pred_points * makeUnitVector(pred_normals) - gt_points * gt_normals
+        distance_btw_planes = (torch.sum(distance_btw_planes, dim=1))
+        distance_btw_planes = distance_btw_planes ** 2
+
+        distance_btw_planes *= plane_mask
+
+        # histograms["Pixel_dist_btw_plane_loss"] = distance_btw_planes.detach()
+        # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
+
+        # losses["Plane_dist_btw_plane_loss"] = planeMean(distance_btw_planes)
 
         # distance_loss2 = l1Loss(-distace_to_pred_plane,
         # torch.zeros_like(distace_to_pred_plane), validMean)

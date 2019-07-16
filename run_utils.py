@@ -179,7 +179,7 @@ def parseArgs(test=False, predict=False):
     parser.add_argument('--load_planes', action="store_true", default=False,
                         help='Load planes from dataset')
 
-    parser.add_argument('--dataset_dir', type=str, default="../datasets/Omnidepth/",
+    parser.add_argument('--dataset_dir', type=str, default="../datasets/Panodepth/",
                         help='Dataset storage folder')
 
     parser.add_argument('--gpu_ids', default='0,1', type=str,
@@ -191,7 +191,7 @@ def parseArgs(test=False, predict=False):
 
     if test:
         parser.add_argument('--test_list', type=str,
-                            default="./data_splits/original_p100_d20_test_split.txt",
+                            default="./data_splits/panodepth_test.txt",
                             help='Validation list with data samples used in model validation')
 
         parser.add_argument('--checkpoint', type=str, default=None,
@@ -210,11 +210,11 @@ def parseArgs(test=False, predict=False):
                             on experiment folder and best model in this folder')
     else:
         parser.add_argument('--train_list', type=str,
-                            default="./data_splits/original_p100_d20_train_split.txt",
+                            default="./data_splits/panodepth_train.txt",
                             help='Trainig list with data filenames used for training')
 
         parser.add_argument('--val_list', type=str,
-                            default="./data_splits/original_p100_d20_test_split.txt",
+                            default="./data_splits/panodepth_test.txt",
                             help='Validation list with data samples used in model validation')
 
         parser.add_argument('--checkpoint', type=str, default=None,

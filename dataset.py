@@ -183,7 +183,7 @@ class OmniDepthDataset(torch.utils.data.Dataset):
         # print(basename)
 
         # read RGB convert to PIL and apply transformation
-        original_rgb = Image.open(osp.join(self.root_path, relative_paths[0]))
+        original_rgb = Image.open(osp.join(self.root_path, relative_paths[0])).convert('RGB')
         rgb = self.transformer_rgb(original_rgb)
 
         # read EXR convert to numpy and convert to PIL. Then apply transformation.
@@ -222,8 +222,9 @@ class OmniDepthDataset(torch.utils.data.Dataset):
         seg_fname = osp.join(self.root_path, seg_fname)
 
         if self.use_planes:
-            plane_seg = ToTensor()(self.readPlanarSegmentation(seg_fname))
-            plane_instances = ToTensor(scale=False)(self.readPlanarInstances(seg_fname))
+            instances, is_planar_seg = self.readPlanarInstances(seg_fname)
+            plane_seg = ToTensor()(is_planar_seg)
+            plane_instances = ToTensor(scale=False)(instances)
             data[DataType.PlanarSegmentation] = plane_seg
             data[DataType.Planes] = plane_instances
 
@@ -242,49 +243,68 @@ class OmniDepthDataset(torch.utils.data.Dataset):
         return np.reshape(data, (*data.shape, 1))
 
     def readNormals(self, path):
+        png_path = path.replace("tiff", "png")
         if osp.exists(path):
             normals = read_tiff(path)
-            return normals
+        elif osp.exists(png_path):
+            normals = np.array(Image.open(png_path)).astype(np.float32)
+            normals = (normals - 127.5) / 127.5
         else:
-            print("File missing", path)
-            return []
+            return ValueError("File missing", path, png_path)
 
-    def readPlanarSegmentation(self, path):
-        if osp.exists(path):
-            planes = read_tiff(path)
-            is_planar = np.sign(planes)
-            return np.float32(is_planar)
-        else:
-            raise ValueError("File missing", path)
+        return normals
+
+    # def readPlanarSegmentation(self, path):
+    #     png_path = path.replace("tiff", "png")
+    #     if osp.exists(path):
+    #         planes = read_tiff(path)
+    #         is_planar = np.sign(planes)
+    #     elif osp.exists(png_path):
+    #         planes = np.array(Image.open(png_path))
+    #         planes = np.reshape(planes, (*planes.shape, 1))
+    #         is_planar = np.sign(planes)
+    #     else:
+    #         raise ValueError("File missing", path, png_path)
+
+    #     return np.float32(is_planar)
 
     def readPlanarInstances(self, path):
+        png_path = path.replace("tiff", "png")
         if osp.exists(path):
-            max_planes = 30
-            # first plane are non planar pixels
             planes = read_tiff(path)
             planes = onehottify(planes)
+            is_planar = 1 - planes[:, :, 0:1]
             planes = planes[:, :, 1:]
-            if len(planes.shape) == 2:
-                print(path)
-                h, w = planes.shape
-                return np.zeros((h, w, max_planes))
-
-            h, w, ch = planes.shape
-            perm = np.argsort(np.sum(planes, axis=(0, 1)))
-            perm = np.flip(perm)
-            planes = planes[:, :, perm]
-            # use only dominant max_planes planes for now. We can increase it later
-            if ch < max_planes:
-                # print(planes.shape, path)
-                if ch == 1:
-                    planes = np.zeros((h, w, 1))
-                planes = np.concatenate([planes, np.zeros((h, w, max_planes - ch))], axis=2)
-            planes2 = planes[:, :, 0:max_planes]
-            # print(np.sum(planes2, axis=(0, 1)), planes2.shape)
-
-            return np.float32(planes2)
+        elif osp.exists(png_path):
+            planes = np.array(Image.open(png_path))
+            planes = np.reshape(planes, (*planes.shape, 1))
+            planes = onehottify(planes)
+            is_planar = 1 - planes[:, :, 1:2]
+            planes = planes[:, :, 2:]
         else:
-            raise ValueError("File missing", path)
+            raise ValueError("File missing", path, png_path)
+
+        max_planes = 30
+
+        if len(planes.shape) == 2:
+            print(path)
+            h, w = planes.shape
+            return np.zeros((h, w, max_planes))
+
+        h, w, ch = planes.shape
+        perm = np.argsort(np.sum(planes, axis=(0, 1)))
+        perm = np.flip(perm)
+        planes = planes[:, :, perm]
+        # use only dominant max_planes planes for now. We can increase it later
+        if ch < max_planes:
+            # print(planes.shape, path)
+            if ch == 1:
+                planes = np.zeros((h, w, 1))
+            planes = np.concatenate([planes, np.zeros((h, w, max_planes - ch))], axis=2)
+        planes2 = planes[:, :, 0:max_planes]
+        # print(np.sum(planes2, axis=(0, 1)), planes2.shape)
+
+        return np.float32(planes2), np.float32(is_planar)
 
 
 class ImageDataset(torch.utils.data.Dataset):
@@ -304,6 +324,7 @@ class ImageDataset(torch.utils.data.Dataset):
         original_rgb = Image.open(self.images[idx])
         rgb = self.transformer_rgb(original_rgb)
         data[DataType.Image] = rgb
+        data[DataType.Mask] = torch.sign(torch.abs(torch.sum(rgb, dim=0, keepdim=True)))
         _, h, w = rgb.size()
         data[DataType.SparseDepth] = torch.zeros((1, h, w))
         return [data, basename]
