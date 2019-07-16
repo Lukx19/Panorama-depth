@@ -65,7 +65,8 @@ def main():
             # '../../datasets/Matterport/',
             # '../../datasets/Stanford/',
             # '../../datasets/SunCG',
-            "../../../datasets/Panodepth/Stanford"
+            "../../../datasets/Panodepth/Stanford",
+            "../../../datasets/Panodepth/Matterport"
 
         ]
         #  use for validation:

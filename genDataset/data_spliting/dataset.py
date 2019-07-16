@@ -55,9 +55,12 @@ class Dataset:
         # ]
         self.ignoreList = [
             "area_3",                                # Stanford
-            "fa5f164b48f043c6b2b0bb9e8631a4821",    # Matterport
-            "a641c3f4647545a2a4f5c50f5f5fbb571",    # Matterport
-            "e0166dba74ee42fd80fccc26fe3f02c81",    # Matterport
+            # "fa5f164b48f043c6b2b0bb9e8631a4821",    # Matterport
+            # "a641c3f4647545a2a4f5c50f5f5fbb571",    # Matterport
+            # "e0166dba74ee42fd80fccc26fe3f02c81",    # Matterport
+            "B6ByNegPMKs",  # Matterport
+            "jtcxE69GiFV",  # Matterport
+            "yqstnuAEVhm",  # Matterport
             "306f740ae757d660135b3e88cdae39551",    # SunCG
             "308ed5f320429e1295db6c872b27ad0b1"     # SunCG
         ]
