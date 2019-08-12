@@ -16,7 +16,7 @@ from run_utils import parseArgs, setupPipeline, setupGPUDevices
 
 def predict(experiment_name=None):
     args = parseArgs(predict=True)
-    torch.manual_seed(19)
+    torch.manual_seed(args.seed)
     checkpoint = args.checkpoint
     if experiment_name is None:
         expr_name = args.experiment_name

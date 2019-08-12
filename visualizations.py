@@ -7,12 +7,87 @@ from enum import Enum
 import math
 import numpy as np
 from PIL import Image
-import util
+from util import read_tiff
 from tqdm import tqdm
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 from multiprocessing import Pool
+import numpy as np
+import pickle as pl
+from scipy import stats
+
+
+def depthBasedHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
+                        max_y=1.3, title="Title", log_scale=False):
+    fig, ax = plt.subplots()
+    bins = 100
+    bin_means, bin_edges, binnumber = stats.binned_statistic(gt_depths, diffrence,
+                                                             range=(0.0, 8.0), statistic='mean',
+                                                             bins=bins)
+    bin_stds, bin_edges, binnumber = stats.binned_statistic(gt_depths, diffrence,
+                                                            range=(0.0, 8.0), statistic='std',
+                                                            bins=bins)
+
+    bin_count, _, _ = stats.binned_statistic(gt_depths, diffrence,
+                                             range=(0.0, 8.0), statistic='count',
+                                             bins=bins)
+    # total_pixels = len(gt_depths)
+    # bin_weight = bin_count / total_pixels
+    # bin_means /= bin_weight
+
+    bin_labels = [bin_edges[i] + (bin_edges[i + 1] - bin_edges[i]) / 2
+                  for i in range(len(bin_edges) - 1)]
+
+    ax.errorbar(bin_labels, bin_means, yerr=bin_stds, ecolor='deepskyblue', color='indigo',
+                elinewidth=2, linewidth=4, label='both limits(default)')
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel('Distance from camera [m]')
+    ax.set_xticks(np.linspace(0.0, 8.0, 10))
+    if log_scale:
+        ax.set_yscale('log')
+    ax.set_ylim((0, max_y))
+    ax.set_xlim((1, 8.0))
+    # ax.set_xticklabels(labels)
+    ax.set_title(title)
+    ax.yaxis.grid(True)
+    # plt.figure()
+    fig.tight_layout()
+    fig.savefig(filename)
+    fig.show()
+    # with open(filename.replace('.png', '.pickle'), 'w') as f:
+    pickle_filename = filename.replace('.png', '.pickle')
+    pl.dump((fig, ax), open(pickle_filename, 'wb'))
+
+
+def depthCountHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
+                        title="Title", log_scale=False):
+    fig, ax = plt.subplots()
+    bins = 100
+    bin_means, bin_edges, binnumber = stats.binned_statistic(gt_depths, diffrence,
+                                                             range=(0.0, 8.0), statistic='count',
+                                                             bins=bins)
+
+    bin_labels = [bin_edges[i] + (bin_edges[i + 1] - bin_edges[i]) / 2
+                  for i in range(len(bin_edges) - 1)]
+    # print(bin_means)
+    ax.bar(bin_labels, bin_means, color='deepskyblue', width=0.2)
+    ax.set_ylabel(ylabel)
+    ax.set_xlabel('Distance from camera [m]')
+    ax.set_xticks(np.linspace(0.0, 8.0, 10))
+
+    # ax.set_ylim((0, max_y))
+    ax.set_xlim((1, 8.0))
+    # ax.set_xticklabels(labels)
+    ax.set_title(title)
+    ax.yaxis.grid(True)
+    # plt.figure()
+    fig.tight_layout()
+    fig.savefig(filename)
+    fig.show()
+    # with open(filename.replace('.png', '.pickle'), 'w') as f:
+    pickle_filename = filename.replace('.png', '.pickle')
+    pl.dump((fig, ax), open(pickle_filename, 'wb'))
 
 
 class Axis(Enum):
@@ -49,7 +124,7 @@ def getRotationMatrix(axis, theta):
     return np.eye(4, 4)
 
 
-def savePcl(points, rgb, file, normals=None):
+def savePcl(points, rgb, file, normals=None, filter_invalid=False):
     encoded = []
     pt_count = points.shape[0]
 
@@ -60,6 +135,9 @@ def savePcl(points, rgb, file, normals=None):
         normals = np.zeros((pt_count, 3))
 
     for pt, normal, color in zip(points, normals, rgb):
+        if filter_invalid:
+            if np.sum(np.abs(color)) == 0 or np.sum(np.abs(pt)) < 0.001:
+                continue
         encoded.append("%f %f %f %f %f %f %d %d %d 0\n" %
                        (pt[0], pt[1], pt[2], normal[0], normal[1], normal[2],
                         color[0], color[1], color[2]))
@@ -152,7 +230,7 @@ def panoDepthToBoxPcl(depth, rgb, box_trans=False):
     return [points, colors]
 
 
-def panoDepthToPcl(depth, rgb, normals=None, scale=1):
+def panoDepthToPcl(depth, rgb, normals=None, scale=1, mask=None):
     points = []
     colors = []
     n = []
@@ -167,6 +245,8 @@ def panoDepthToPcl(depth, rgb, normals=None, scale=1):
     # print(hcam_deg, vcam_deg)
     for v in range(height):
         for u in range(width):
+            if mask is not None and mask[v, u] < 0.001:
+                continue
             p_theta = (u - width / 2.0) / width * hcam_rad
             p_phi = -(v - height / 2.0) / height * vcam_rad
 
@@ -190,6 +270,17 @@ def panoDepthToPcl(depth, rgb, normals=None, scale=1):
             else:
                 n.append([0, 0, 0])
     return [np.array(points), np.array(colors), np.array(n)]
+
+
+def saveDepthMap(depth, filename, max_val=8):
+    fig = plt.figure()
+    # fig.subplots_adjust(hspace=0.1, wspace=0.01)
+    ax1 = fig.add_subplot(1, 1, 1)
+    ax1.axis('off')
+    ax1.imshow(depth, vmin=0, vmax=max_val)
+    fig.tight_layout()
+    fig.savefig(filename, dpi=300, bbox_inches='tight', pad_inches=0)
+    plt.close(fig)
 
 
 def saveDepthMaps(rgb, gt, pred, filename):
@@ -218,8 +309,8 @@ def convert(args):
     basename = osp.basename(img_path)
     basename = osp.splitext(basename)[0]
     # print(basename)
-    depth_gt = np.squeeze(util.read_tiff(gt_path))
-    depth_pred = np.squeeze(util.read_tiff(pred_path))
+    depth_gt = np.squeeze(read_tiff(gt_path))
+    depth_pred = np.squeeze(read_tiff(pred_path))
     rgb = np.array(Image.open(img_path))
 
     filename = osp.join(output_dir, basename + ".png")
@@ -227,7 +318,7 @@ def convert(args):
 
     pcd = panoDepthToPcl(depth_pred, rgb)
     filename = osp.join(output_dir, basename + "_pred.ply")
-    savePcl(pcd[0], pcd[1], filename)
+    savePcl(pcd[0], pcd[1], filename, filter_invalid=True)
 
     pcd = panoDepthToPcl(depth_gt, rgb)
     filename = osp.join(output_dir, basename + "_gt.ply")
@@ -246,7 +337,7 @@ def visualizePclDepth(results_dir):
     # print(results_dir+"/*_color.jpg")
     # print(images, gt_depths, pred_depths)
     input_args = zip(images, gt_depths, pred_depths)
-    input_args = [(results_dir, data) for data in input_args]
+    input_args = [(output_dir, data) for data in input_args]
     pool = Pool(os.cpu_count() // 2)
     for _ in tqdm(pool.imap_unordered(convert, input_args), total=len(input_args)):
         pass
@@ -279,13 +370,8 @@ def main2():
     # print(images, gt_depths, pred_depths)
 
     for depth_path in depths:
-        if depth_path[-3:] == 'exr':
-            raw_depth = util.read_exr(depth_path)
-            depth = np.squeeze(raw_depth[..., 0]).astype(np.float32)
-            filename = depth_path[:-3] + "ply"
-        else:
-            depth = np.squeeze(util.read_tiff(depth_path))
-            filename = depth_path[:-4] + "ply"
+        depth = np.squeeze(read_tiff(depth_path))
+        filename = depth_path[:-4] + "ply"
 
         print(filename)
         pcd = panoDepthToPcl(depth, None)

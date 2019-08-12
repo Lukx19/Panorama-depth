@@ -65,8 +65,10 @@ def main():
             # '../../datasets/Matterport/',
             # '../../datasets/Stanford/',
             # '../../datasets/SunCG',
-            "../../../datasets/Panodepth/Stanford",
-            "../../../datasets/Panodepth/Matterport"
+            "../../../datasets/Panodepth2/Stanford",
+            # "../../../datasets/Panodepth/Matterport"
+            "../../../datasets/Panodepth2/Matterport",
+            "../../../datasets/Panodepth2/MatterportR",
 
         ]
         #  use for validation:
@@ -82,8 +84,8 @@ def main():
     data = dataset.Dataset(name, mode, dataDirectories, filenamesDir, name)
     data.gatherFiles()
     data.printCountSummary()
-    # data.removeOutliers()
-    data.useAllData()
+    data.removeOutliers()
+    # data.useAllData()
     data.splitFiles()
     data.printFileSummary()
     data.createFiles()

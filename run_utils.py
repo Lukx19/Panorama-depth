@@ -28,8 +28,10 @@ def setupPipeline(network_type, loss_type, add_points, empty_points, loss_scales
     if network_type == 'Omnidepth':
         model_opts["use_group_norm"] = False
         model = RectNet(in_channels, ops=model_opts)
-        alpha_list = [0.535, 0.272]
-        beta_list = [0.134, 0.068, ]
+        # alpha_list = [0.535, 0.272]
+        alpha_list = [1, 1]
+        # beta_list = [0.134, 0.068, ]
+        beta_list = [1, 1, ]
     elif network_type == 'UResNet':
         model = UResNet(in_channels)
         alpha_list = [0.445, 0.275, 0.13]
@@ -179,7 +181,9 @@ def parseArgs(test=False, predict=False):
     parser.add_argument('--load_planes', action="store_true", default=False,
                         help='Load planes from dataset')
 
-    parser.add_argument('--dataset_dir', type=str, default="../datasets/Panodepth/",
+    parser.add_argument('--dataset_dir', type=str,
+                        # default="../datasets/Omnidepth/",
+                        default="../datasets/Panodepth2/",
                         help='Dataset storage folder')
 
     parser.add_argument('--gpu_ids', default='0,1', type=str,
@@ -191,7 +195,8 @@ def parseArgs(test=False, predict=False):
 
     if test:
         parser.add_argument('--test_list', type=str,
-                            default="./data_splits/panodepth_test.txt",
+                            # default="./data_splits/original_p100_d20_test_split.txt",
+                            default="./data_splits/robust_exp_test.txt",
                             help='Validation list with data samples used in model validation')
 
         parser.add_argument('--checkpoint', type=str, default=None,
@@ -210,11 +215,13 @@ def parseArgs(test=False, predict=False):
                             on experiment folder and best model in this folder')
     else:
         parser.add_argument('--train_list', type=str,
-                            default="./data_splits/panodepth_train.txt",
+                            # default="./data_splits/original_p100_d20_train_split.txt",
+                            default="./data_splits/robust_exp_train.txt",
                             help='Trainig list with data filenames used for training')
 
         parser.add_argument('--val_list', type=str,
-                            default="./data_splits/panodepth_test.txt",
+                            # default="./data_splits/original_p100_d20_test_split.txt",
+                            default="./data_splits/robust_exp_test.txt",
                             help='Validation list with data samples used in model validation')
 
         parser.add_argument('--checkpoint', type=str, default=None,
@@ -240,6 +247,8 @@ def parseArgs(test=False, predict=False):
         parser.add_argument('--epochs', default=10, type=int)
         parser.add_argument('--lr', default=3e-3,
                             type=float, help='Learning rate')
+        parser.add_argument('--seed', default=19,
+                            type=float, help='Seeed')
         parser.add_argument('--disable_visdom', action="store_true", default=False,
                             help='Disable use of visdom server in training')
 

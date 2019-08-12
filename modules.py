@@ -20,17 +20,17 @@ class Depth2Points(nn.Module):
             for u in range(width):
                 theta[v, u] = (u - width / 2.0) / width * hcam_rad
                 phi[v, u] = -(v - height / 2.0) / height * vcam_rad
-        self.cos_theta = nn.Parameter(torch.cos(theta), requires_grad=False)
-        self.sin_theta = nn.Parameter(torch.sin(theta), requires_grad=False)
-        self.cos_phi = nn.Parameter(torch.cos(phi), requires_grad=False)
-        self.sin_phi = nn.Parameter(torch.sin(phi), requires_grad=False)
+        cos_theta = torch.cos(theta)
+        sin_theta = torch.sin(theta)
+        cos_phi = torch.cos(phi)
+        sin_phi = torch.sin(phi)
+        X = cos_phi * cos_theta
+        Y = cos_phi * sin_theta
+        Z = sin_phi
+        self.unit_sphere = nn.Parameter(torch.stack((X, Y, Z), dim=0), requires_grad=False)
 
     def forward(self, depth):
-        X = depth * self.cos_phi * self.cos_theta
-        Y = depth * self.cos_phi * self.sin_theta
-        Z = depth * self.sin_phi
-        points = torch.cat((X, Y, Z), dim=1)
-        # print(points)
+        points = depth * self.unit_sphere
         return points
 
 

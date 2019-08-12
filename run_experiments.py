@@ -17,7 +17,7 @@ def main():
         description='Generate new test metrics')
     parser.add_argument('experiments_folder', type=str, help='Path to folder')
     parser.add_argument('--test_list', type=str,
-                        default="./data_splits/original_p100_d20_test_split.txt",
+                        default=None,
                         help='Validation list with data samples used in model validation')
 
     parser.add_argument('--save_results', action="store_true", default=False,
@@ -26,7 +26,10 @@ def main():
     parser.add_argument('--run_test', action="store_true", default=False,
                         help='Run network test')
 
-    parser.add_argument('--dataset_dir', type=str, default="../datasets/Omnidepth/",
+    parser.add_argument('--latest_model', action="store_true", default=False,
+                        help='Use latest model instead of best model')
+
+    parser.add_argument('--dataset_dir', type=str, default=None,
                         help='Dataset storage folder')
 
     args = parser.parse_args()
@@ -45,17 +48,25 @@ def main():
         if args.run_test:
             with open(args_file, "r") as f:
                 test_args = json.load(f)
+            if "seed" not in test_args:
+                test_args["seed"] = 19
+
             test_args["checkpoint"] = None
-            test_args["test_list"] = args.test_list
+            if args.test_list is None:
+                test_args["test_list"] = test_args["val_list"]
+            else:
+                test_args["test_list"] = args.test_list
+
             test_args["save_results"] = args.save_results
-            test_args["dataset_dir"] = args.dataset_dir
+            if args.dataset_dir is not None:
+                test_args["dataset_dir"] = args.dataset_dir
             test_args["experiment_name"] = experiment_folder
-            test_args["gpu_ids"] = '0'
+            test_args["gpu_ids"] = '1'
             test_args["load_normals"] = True
             test_args["load_planes"] = True
-            report = test.test(args=SimpleNamespace(**test_args))
-            if args.save_results:
-                visualizations.visualizePclDepth(test_results_folder)
+            report = test.test(args=SimpleNamespace(**test_args), best_model=not args.latest_model)
+            # if args.save_results:
+            #     visualizations.visualizePclDepth(test_results_folder)
         else:
             with open(osp.join(test_results_folder, "metrics.txt"), "r") as f:
                 report = json.load(f)

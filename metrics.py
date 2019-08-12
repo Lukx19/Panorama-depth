@@ -51,6 +51,7 @@ def normal_stats(pred, gt, mask):
     assert b == 1
     mask = torch.reshape(mask, (1, h, w))
     val = torch.nn.functional.cosine_similarity(pred, gt, dim=1)[mask > 0]
+
     to_deg = 180 / np.pi
     mean = torch.acos(torch.mean(val))
     median = torch.acos(torch.median(val))

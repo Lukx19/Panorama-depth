@@ -12,7 +12,7 @@ import json
 
 
 args = parseArgs(test=False)
-torch.manual_seed(19)
+torch.manual_seed(args.seed)
 experiment_name = args.network_type + "_" + args.loss_type + "_" + args.experiment_name
 checkpoint_dir = osp.join('./experiments/', experiment_name)
 os.makedirs(checkpoint_dir, exist_ok=True)

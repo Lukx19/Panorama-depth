@@ -315,6 +315,7 @@ rectnet_ops = {
     "sigma_n": [1 / 3, 1 / 3, 1 / 3],
     "guided_merge": True,
     "seg_small_merge": False,
+    "direct_merge": False,
     "fusion_merge": False,
     "use_group_norm": True,
 }
@@ -496,12 +497,16 @@ class RectNet(nn.Module):
             self.guidance2 = nn.Conv2d(2, 1, 3, padding=1)
 
         if self.fusion_merge:
-            self.fusion_d = FilterBlock(in_channels=1, reflection_pad=reflection_pad,
+            self.fusion_d = FilterBlock(in_channels=1, out_channels=1,
+                                        out_activation=torch.tanh, reflection_pad=reflection_pad,
                                         group_norm=self.use_gn)
-            self.fusion_g = FilterBlock(in_channels=1, reflection_pad=reflection_pad,
-                                        group_norm=self.use_gn)
-            self.fusion = FilterBlock(in_channels=2, reflection_pad=reflection_pad,
-                                      group_norm=self.use_gn)
+            self.fusion_g = FilterBlock(in_channels=1, out_channels=1, out_activation=torch.tanh,
+                                        reflection_pad=reflection_pad, group_norm=self.use_gn)
+            self.fusion = FilterBlock(in_channels=2, out_channels=1, reflection_pad=reflection_pad,
+                                      group_norm=self.use_gn, out_activation=torch.tanh)
+            self.decoder1_attention = ConvELUBlock(128, 64, 3, dilation=2, padding=2,
+                                                   reflection_pad=reflection_pad, group_norm=self.use_gn)
+            self.decoder2_attention = nn.Conv2d(64, 1, 1)
 
         self.apply(xavier_init)
         print(f""""normals: {self.calc_normals}, seg: {self.calc_segmentation},
@@ -602,6 +607,7 @@ class RectNet(nn.Module):
             seg_out = self.decoder1_seg(decoder1_0_out)
             pred_seg = self.decoder2_seg(seg_out)
             outputs["segmentation"] = pred_seg
+
         if self.calc_norm_seg_2x:
             # 2. downsample to 1/2 resolution -> reduce noise
             normals_2x = self.avg_pool_normal(pred_normals).detach()
@@ -630,12 +636,18 @@ class RectNet(nn.Module):
 
                 # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
                 smooth_depth_2x = self.d2pt_2x(pred_2x.detach(), smooth_pts, normals_2x)
+                # depth_diff = torch.abs(pred_2x - smooth_depth_2x)
                 depth_diff = torch.abs(pred_2x - smooth_depth_2x)
                 smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
                                               pred_2x, smooth_depth_2x)
+                # smooth_depth_2x = smooth_depth_2x * hard_seg
                 # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
                 upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
                                                        scale_factor=2, mode="bilinear")
+
+                hard_seg_1x = torch.where(torch.sigmoid(pred_seg) > 0.5, torch.ones_like(pred_seg),
+                                          torch.zeros_like(pred_seg))
+                upsampled_planar_depth = upsampled_planar_depth * hard_seg_1x
                 # upsampled_pred_2x = upsampled_planar_depth
                 outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
             # print(upsampled_planar_depth.requires_grad)
@@ -675,8 +687,15 @@ class RectNet(nn.Module):
         else:
             opt_depth = pred_1x
 
-        outputs["depth1x"] = opt_depth
+        outputs["depth1x"] = [opt_depth]
         outputs["depth2x"] = pred_2x
+
+        if self.ops["direct_merge"]:
+            depth_diff = torch.abs(opt_depth - upsampled_planar_depth)
+            smooth_depth = torch.where(depth_diff > self.ops["smooth_treshold"],
+                                       opt_depth, upsampled_planar_depth)
+            outputs["depth1x"] = [smooth_depth, opt_depth]
+            return outputs
 
         if self.calc_merge_guidance:
             merge_seg = None
@@ -703,17 +722,24 @@ class RectNet(nn.Module):
 
             refined_depth = planar_depth + basic_depth
 
-            outputs["pcl"].append(self.to3d(refined_depth.clone().detach()))
-            outputs["depth1x"] = refined_depth
+            # outputs["pcl"].append(self.to3d(refined_depth.clone().detach()))
+            # outputs["depth_ref"] = refined_depth
+            outputs["depth1x"].insert(0, refined_depth)
 
         if self.fusion_merge:
-            emb_d = self.fusion_d(opt_depth)
-            emb_g = self.fusion_g(upsampled_planar_depth)
+            attention = self.decoder2_attention(self.decoder1_attention(decoder1_0_out))
+            merge_seg = torch.sigmoid(attention)
+            planar_normalized = upsampled_planar_depth / 8.0
+            emb_d = self.fusion_d(opt_depth / 8.0)
+            emb_g = self.fusion_g(merge_seg * planar_normalized)
             feat_planar = torch.cat((emb_d, emb_g), dim=1)
             emb_f = self.fusion(feat_planar)
-            refined_depth = emb_f + upsampled_planar_depth
-            outputs["depth_ref"] = refined_depth
-            outputs["guidance"] = [emb_d, emb_g, emb_f]
+            emb_seg = (1 - merge_seg) * emb_f
+            refined_depth = (emb_seg * 8) + (planar_normalized * merge_seg) * 8
+            # outputs["depth_ref"] = refined_depth
+            outputs["depth1x"].insert(0, refined_depth)
+            outputs["guidance"] = [emb_d, emb_g, emb_f, merge_seg, emb_seg * 8]
+            # outputs["guidance"] = [emb_f]
 
         # outputs["depth_normals"] = self.depth_normals(opt_depth)
         # if self.calc_normals and not self.normal_smoothing:
@@ -799,7 +825,9 @@ class RectNet(nn.Module):
         if "depth1x_smooth" in outputs:
             data.add(outputs["depth1x_smooth"], DataType.Depth)
 
-        data.add(outputs["depth1x"], DataType.Depth)
+        for depth in outputs["depth1x"]:
+            data.add(depth, DataType.Depth)
+
         data.add(outputs["depth2x"], DataType.Depth, scale=2)
         if "depth_normals" in outputs:
             data.add(outputs["depth_normals"], DataType.DepthNormals)
@@ -1115,17 +1143,21 @@ class DoubleBranchNet(nn.Module):
 
 
 class FilterBlock(nn.Module):
-    def __init__(self, in_channels, reflection_pad=False, group_norm=True):
+    def __init__(self, in_channels, out_channels=1, out_activation=None,
+                 reflection_pad=False, group_norm=True):
         super(FilterBlock, self).__init__()
         self.block = nn.Sequential(
             ConvELUBlock(in_channels, 64, 5, padding=2,
                          reflection_pad=reflection_pad, group_norm=group_norm),
             ConvELUBlock(64, 32, 1, padding=0,
                          reflection_pad=reflection_pad, group_norm=group_norm),
-            nn.Conv2d(32, 1, 3, padding=1)
+            nn.Conv2d(32, out_channels, 3, padding=1)
         )
+        self.activation = out_activation
 
     def forward(self, x):
+        if self.activation is not None:
+            return self.activation(self.block(x))
         return self.block(x)
 
 
@@ -1199,7 +1231,7 @@ class ConvELUBlock(nn.Module):
             dilation=dilation)
         self.group_norm = group_norm
         if self.group_norm:
-            self.norm = nn.GroupNorm(num_groups=out_channels // 2, num_channels=out_channels)
+            self.norm = nn.GroupNorm(num_groups=min(1000000, out_channels // 2), num_channels=out_channels)
 
     def forward(self, x):
         if self.reflection_pad:

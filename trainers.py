@@ -5,6 +5,8 @@ from tqdm import tqdm
 import shutil
 import os.path as osp
 import os
+from torchvision.transforms.functional import to_pil_image
+from PIL import Image
 from collections import defaultdict
 import util
 from metrics import (abs_rel_error, delta_inlier_ratio,
@@ -14,7 +16,7 @@ from metrics import (abs_rel_error, delta_inlier_ratio,
                      delta_normal_angle_ratio, normal_stats, distance_to_plane,
                      direct_depth_accuracy)
 
-from util import (saveTensorTiff, toDevice, register_hooks, plot_grad_flow, imageHeatmap,
+from util import (saveTensorTiff, toDevice, imageHeatmap,
                   stackVerticaly, heatmapGrid, pytorchDetachedProcess, linePlot)
 from network import toPlaneParams, DepthToNormals
 import torchvision.transforms as Tt
@@ -25,7 +27,7 @@ import colorsys
 import numpy as np
 import json
 import plotly as py
-from visualizations import panoDepthToPcl, savePcl
+from visualizations import panoDepthToPcl, savePcl, saveDepthMap
 from modules import Depth2Points
 
 # From https://github.com/fyu/drn
@@ -222,6 +224,29 @@ def save_samples_default(data, outputs, results_dir):
     pass
 
 
+def saveNormalHistogram(pred_normals, gt_normals, filename, visdom=None):
+    if len(pred_normals) > 0 and len(gt_normals) > 0:
+        pred_normals = pred_normals[0][0].cpu().detach()
+        pred_normals = util.makeUnitVector(pred_normals)
+        pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
+        gt_normals = gt_normals[0][0].cpu().detach()
+        gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
+        normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
+        if filename is not None:
+            py.io.write_image(normals_fig, filename)
+        if visdom is not None:
+            visdom[0].plotlyplot(normals_fig, win="normals", env=visdom[1])
+
+
+def savePointCloud(filename, rgb, depth, normals=None, mask=None):
+    depth = depth.cpu().detach()
+    depth = torch.squeeze(depth).numpy()
+    if mask is not None:
+        mask = torch.squeeze(mask.cpu().detach()).numpy()
+    pcl = panoDepthToPcl(depth, rgb, normals=normals, mask=mask)
+    savePcl(pcl[0], pcl[1], filename, normals=pcl[2])
+
+
 def save_saples_for_pcl(data, outputs, results_dir):
     # print(outputs)
     d = data
@@ -239,11 +264,20 @@ def save_saples_for_pcl(data, outputs, results_dir):
         name = osp.join(results_dir, name)
         prediction = o[i]
         img = d.get(DataType.Image, scale=1)[0][i]
-
+        color_img = Tt.functional.to_pil_image(img.cpu())
+        mask = d.get(DataType.Mask, scale=1)[0][i].cpu().detach()
+        mask[:, 0:16, :] = 0
+        mask[:, -16:, :] = 0
         gt = d.get(DataType.Depth, scale=1)
         if len(gt):
             saveTensorTiff(name + "_gt_depth", gt[0][i],)
+            gt_depth_i = gt[0][i].cpu().numpy()
+            saveDepthMap(gt_depth_i.squeeze(), f"{name}_gt_hist.png")
+            savePointCloud(f"{name}_gt_pts.ply", np.array(color_img), gt[0][i], mask=mask)
+
         saveTensorTiff(name + "_pred_depth", prediction,)
+        saveDepthMap(prediction.cpu().numpy().squeeze(), f"{name}_pred_hist.png")
+        savePointCloud(f"{name}_pred_pts.ply", np.array(color_img), prediction, mask=mask)
 
         sparse_points = d.get(DataType.SparseDepth, scale=1)
         if len(sparse_points) > 0:
@@ -251,19 +285,34 @@ def save_saples_for_pcl(data, outputs, results_dir):
             saveTensorTiff(name + "_sparse_depth",
                            sparse_points * unnorm_depth)
 
-        color_img = Tt.functional.to_pil_image(img.cpu())
         color_img.save(name + "_color.jpg")
 
+        color = np.reshape(color_img, (-1, 3))
+        for c, pts in enumerate(outputs.get(DataType.Points3d)):
+            pts = pts[i].cpu().permute(1, 2, 0).numpy()
+            pts = np.reshape(pts, (-1, 3))
+            savePcl(pts, color, name + '_points3d_' + str(c) + '.ply',
+                    normals=None)
+
+        for c, guidance in enumerate(outputs.get(DataType.Guidance)):
+            saveDepthMap(guidance.cpu().numpy().squeeze(), f"{name}_guidance_{c}.png")
+
         if len(normals) > 0:
-            normals_i = normals[0][i].cpu()
-            normals_i = util.makeUnitVector(normals_i)
-            saveTensorTiff(name + "_pred_normals",
-                           normals_i)
+            Image.fromarray(np.array(color_img)[15:-15, :, :]).save(f"{name}_normal_img.jpg")
+            normals_i = normals[0][i].cpu()[:, 15:-15, :]
+            normals_i = util.makeUnitVector(normals_i) * 127.5 + 127.5
+            normals_i = normals_i.permute(1, 2, 0).numpy()
+            Image.fromarray(normals_i.astype(np.uint8)).save(name + "_pred_normals_raw.png")
+            # Image(normals_i.int().permute(1, 2, 0).numpy()).save(name + "_pred_normals_raw.png")
+            # saveTensorTiff(name + "_pred_normals",
+            #                normals_i)
             gt_normals = d.get(DataType.Normals, scale=1)
             if len(gt_normals) > 0:
-                gt_normals = gt_normals[0][0].cpu()
-                saveTensorTiff(name + "_gt_normals",
-                               gt_normals)
+                gt_normals_i = gt_normals[0][i].cpu() * 127.5 + 127.5
+                gt_normals_i = gt_normals_i[:, 15:-15, :]
+                gt_normals_i = gt_normals_i.permute(1, 2, 0).numpy()
+                Image.fromarray(gt_normals_i.astype(np.uint8)).save(name + "_gt_normals_raw.png")
+                # saveNormalHistogram(normals, gt_normals, f"{name}_normals.png")
 
         # d['original_image'][i].write(osp.join(results_dir, name + "_color.jpg"))
 
@@ -390,6 +439,7 @@ class MonoTrainer(object):
             "Inlier D1": AverageMeter(),
             "Inlier D2": AverageMeter(),
             "Inlier D3": AverageMeter(),
+            "Scale": AverageMeter(),
         }
         self.meters["Acc_Normals"] = {
             "Normal Angle 11.25": AverageMeter(),
@@ -436,6 +486,7 @@ class MonoTrainer(object):
             "Inlier D1": SeriesData(),
             "Inlier D2": SeriesData(),
             "Inlier D3": SeriesData(),
+            "Scale": SeriesData(),
         }
         self.trackers["Acc_Normals"] = {
             "Normal Angle 11.25": SeriesData(),
@@ -578,7 +629,8 @@ class MonoTrainer(object):
     def predict(self, checkpoint_path):
         self.validate(checkpoint_path, save_all_predictions=True, calc_metrics=False)
 
-    def validate(self, checkpoint_path=None, save_all_predictions=False, calc_metrics=True):
+    def validate(self, checkpoint_path=None, save_all_predictions=False,
+                 calc_metrics=True, extra_stats=False):
         print('Validating model....')
 
         if checkpoint_path is not None:
@@ -591,11 +643,16 @@ class MonoTrainer(object):
         # Reset meter
         self.reset_eval_metrics()
         d1_acc_files = []
+        depth_diffs = np.array([])
+        gt_depths = np.array([])
+        angle_diffs = np.array([])
         # Load data
         s = time.time()
         with torch.no_grad():
             for batch_num, raw_data in tqdm(enumerate(self.val_dataloader),
                                             total=len(self.val_dataloader)):
+                # if batch_num > 200:
+                #     break
 
                 # Parse the data
                 inputs, data = self.parse_data(raw_data)
@@ -607,8 +664,19 @@ class MonoTrainer(object):
 
                 # Compute the evaluation metrics
                 if calc_metrics:
-                    d1 = self.compute_eval_metrics(output, data)
-                    d1_acc_files.append((d1, raw_data[1][0]))
+                    d1, gt_depth, depth_diff, angle_diff = self.compute_eval_metrics(output, data)
+                    if angle_diff is not None:
+                        angle_mean = torch.mean(angle_diff).item()
+                    else:
+                        angle_mean = 0
+                    if extra_stats:
+                        gt_depths = np.append(gt_depths, gt_depth.cpu().reshape(-1).numpy())
+                        depth_diffs = np.append(depth_diffs, depth_diff.cpu().reshape(-1).numpy())
+                        if angle_diff is not None:
+                            angle_diffs = np.append(angle_diffs,
+                                                    angle_diff.cpu().reshape(-1).numpy())
+                    d1_acc_files.append((d1.item(), raw_data[1][0], angle_mean))
+
                 if save_all_predictions:
                     self.save_samples(data, output, self.checkpoint_dir)
                 else:
@@ -627,7 +695,7 @@ class MonoTrainer(object):
             f.write(json.dumps(report, indent=2))
 
         self.network = self.network.train()
-        return report, d1_acc_files
+        return report, (d1_acc_files, gt_depths, depth_diffs, angle_diffs)
 
     def train(self, checkpoint_path=None, weights_only=False):
 
@@ -689,6 +757,9 @@ class MonoTrainer(object):
             depth_mask = depth_mask - depth_mask * pts_present_mask
 
         N = depth_mask.sum().item()
+        normal_mask = depth_mask.clone()
+        normal_mask[:, :, 0:12, :] = 0
+        normal_mask[:, :, -1:-12, :] = 0
 
         plane_mask = None
         if len(gt_planes) > 0:
@@ -709,6 +780,7 @@ class MonoTrainer(object):
         d3 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=3)
         dd2 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.2)
         dd4 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.4)
+        depth_diff = (gt_depth - depth_pred)[normal_mask > 0]
         # dde_0, dde_m, dde_p = directed_depth_error(depth_pred, gt_depth, depth_mask, thr=3.0)
         # dbe_acc, dbe_com = depth_boundary_error(depth_pred, gt_depth, depth_mask)
 
@@ -724,8 +796,8 @@ class MonoTrainer(object):
                                           degree=1, base=1.1)
             dd2_plane = direct_depth_accuracy(depth_pred, gt_depth, plane_mask, thr=0.2)
 
+        angle_diff = None
         if len(gt_normals) > 0 and len(pred_normals) > 0:
-            normal_mask = depth_mask
             pred_normals0 = util.makeUnitVector(pred_normals[0])
             norm1 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=11.25)
@@ -734,6 +806,10 @@ class MonoTrainer(object):
             norm3 = delta_normal_angle_ratio(pred_normals0, gt_normals[0],
                                              normal_mask, degree=30)
             norm_mean, norm_median = normal_stats(pred_normals0, gt_normals[0], normal_mask)
+            angle_diff = torch.nn.functional.cosine_similarity(pred_normals0,
+                                                               gt_normals[0], dim=1)
+            angle_diff = angle_diff.squeeze()[normal_mask.squeeze() > 0]
+
         # pe_flat, orient_err = planarity_errors(depth_pred, gt_normals, planes, mask)
         if len(sparse_pts) > 0:
             sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
@@ -756,6 +832,7 @@ class MonoTrainer(object):
         self.meters["Acc_Depth"]["Inlier D1"].update(d1, N)
         self.meters["Acc_Depth"]["Inlier D2"].update(d2, N)
         self.meters["Acc_Depth"]["Inlier D3"].update(d3, N)
+        self.meters["Acc_Depth"]["Scale"].update(median_scaling_factor, 1)
         self.meters["Direct_Acc"]["Direct Depth 0.2"].update(dd2, N)
         self.meters["Direct_Acc"]["Direct Depth 0.4"].update(dd4, N)
 
@@ -776,7 +853,8 @@ class MonoTrainer(object):
 
         #     self.meters[""]["Plane Flatness Err"].update(pe_flat)
         #     self.meters[""]["Plane Orientation Err"].update(orient_err)
-        return d1
+        return (d1, gt_depth[normal_mask > 0],
+                depth_diff, angle_diff)
 
     def load_checkpoint(self, checkpoint_path=None, weights_only=False, eval_mode=False):
         '''
@@ -1014,17 +1092,11 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
 
     pred_normals = output.get(DataType.Normals, scale=1)
     gt_normals = data.get(DataType.Normals, scale=1)
-    if len(pred_normals) > 0 and len(gt_normals) > 0:
-        pred_normals = pred_normals[0][0].cpu().detach()
-        pred_normals = util.makeUnitVector(pred_normals)
-        pred_normals = stackVerticaly(pred_normals).squeeze().flip(0).numpy()
-        gt_normals = gt_normals[0][0].cpu().detach()
-        gt_normals = stackVerticaly(gt_normals).squeeze().flip(0).numpy()
-        normals_fig = heatmapGrid([gt_normals, pred_normals], ["Gt normals", "Pred normals"])
-        if save_to_disk:
-            py.io.write_image(normals_fig, osp.join(data_folder, 'normals.png'))
-        if visdom is not None:
-            visdom[0].plotlyplot(normals_fig, win="normals", env=visdom[1])
+    if save_to_disk:
+        saveNormalHistogram(pred_normals, gt_normals,
+                            osp.join(data_folder, 'normals.png'), visdom=visdom)
+    else:
+        saveNormalHistogram(pred_normals, gt_normals, None, visdom=visdom)
 
     pred_depth_normals = output.get(DataType.DepthNormals, scale=1)
     gt_depth2 = data.get(DataType.Depth, scale=1)
@@ -1094,17 +1166,12 @@ def visualize_samples(visdom, directory, data, output, loss_hist, save_to_disk=T
         pred_normals = None
 
     for i, depth in enumerate(output.get(DataType.Depth, scale=1)):
-        pred_depth = depth[0].cpu().detach()
-        pred_depth = torch.squeeze(pred_depth.permute(1, 2, 0)).numpy()
-        pcl = panoDepthToPcl(pred_depth, rgb, normals=pred_normals)
-        savePcl(pcl[0], pcl[1], osp.join(data_folder, 'pcl_cloud_' + str(i) + '.ply'),
-                normals=pcl[2])
+        savePointCloud(osp.join(data_folder, 'pcl_cloud_' + str(i) + '.ply'),
+                       rgb, depth[0])
 
-    gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu().detach()
-    gt_depth = torch.squeeze(gt_depth.permute(1, 2, 0)).numpy()
-
-    pcl_gt = panoDepthToPcl(gt_depth, rgb)
-    savePcl(pcl_gt[0], pcl_gt[1], osp.join(data_folder, 'pcl_gt_cloud.ply'))
+    gt_depth = data.get(DataType.Depth, scale=1)[0][0].cpu()
+    savePointCloud(osp.join(data_folder, 'pcl_gt_cloud.ply'),
+                   rgb, gt_depth)
 
     if pred_normals is not None:
         normals = np.reshape(pred_normals, (-1, 3))

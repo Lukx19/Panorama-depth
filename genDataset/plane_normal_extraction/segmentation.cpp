@@ -124,8 +124,8 @@ void savePclNormals(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
 }
 
 void savePlaneMask(const std::string &filename,
-                        const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
-                        size_t width, size_t height) {
+                   const pcl::PointCloud<PointXYZLUV>::Ptr &cloud, size_t width,
+                   size_t height) {
   CImg<uint32_t> planes(width, height, 1, 1, 0.f);
   for (const PointXYZLUV &pt : cloud->points) {
     // cloud contains only planes labeled from 0.
@@ -147,9 +147,9 @@ void saveNormals(const std::string &filename,
     normals_img(pt.u, pt.v, 0, 0) =
         static_cast<uint8_t>(std::truncf(normal.normal_x * 127.5 + 127.5));
     normals_img(pt.u, pt.v, 0, 1) =
-      static_cast<uint8_t>(std::truncf(normal.normal_y * 127.5 + 127.5));
+        static_cast<uint8_t>(std::truncf(normal.normal_y * 127.5 + 127.5));
     normals_img(pt.u, pt.v, 0, 2) =
-      static_cast<uint8_t>(std::truncf(normal.normal_z * 127.5 + 127.5));
+        static_cast<uint8_t>(std::truncf(normal.normal_z * 127.5 + 127.5));
   }
   normals_img.save_png(filename.c_str(), 1);
 }
@@ -366,11 +366,22 @@ auto estimateCurvature(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
   return curvature;
 }
 
-int main(int argc, char *argv[]) {
+int main(int argc, char **argv) {
   std::string fname = "default.tiff";
-  if (argc > 1) {
-    fname = argv[1];
+  bool save_normals = true;
+  std::vector<std::string> args(argv, argv + argc);
+
+  if (args.size() > 1) {
+    fname = args[1];
+  } else {
+    return 0;
   }
+  if (args.size() > 2) {
+    if (args[2] == "--no_normals") {
+      save_normals = false;
+    }
+  }
+
   size_t start_name = fname.find("_depth_");
   if (start_name == std::string::npos) {
     std::cout << "Provided file is not a depth file: " << fname << std::endl;
@@ -383,8 +394,8 @@ int main(int argc, char *argv[]) {
   normals_fname.replace(start_name, 7, "_normals_");
   curvature_fname.replace(start_name, 7, "_curvature_");
 
-  normals_fname.replace(normals_fname.end()-4,normals_fname.end(),"png");
-  planes_fname.replace(planes_fname.end()-4,planes_fname.end(),"png");
+  normals_fname.replace(normals_fname.end() - 4, normals_fname.end(), "png");
+  planes_fname.replace(planes_fname.end() - 4, planes_fname.end(), "png");
 
   size_t width;
   size_t height;
@@ -397,7 +408,9 @@ int main(int argc, char *argv[]) {
   std::tie(width, height, cloud) = convertToPcl(fname);
 
   normals = estimateNormals(cloud);
-  saveNormals(normals_fname, cloud, normals, width, height);
+  if (save_normals) {
+    saveNormals(normals_fname, cloud, normals, width, height);
+  }
 
   // curvature = estimateCurvature(cloud, normals);
   // saveCurvature(curvature_fname, cloud, curvature, width, height);
@@ -405,6 +418,6 @@ int main(int argc, char *argv[]) {
 
   std::tie(n_planes, planes_cloud) = estimatePlanesGrow(cloud, normals);
   savePlaneMask(planes_fname, planes_cloud, width, height);
-  // savePlanePcl(planes_cloud, n_planes, planes_fname + ".ply");
+  savePlanePcl(planes_cloud, n_planes, planes_fname + ".ply");
   // savePclNormals(planes_cloud, normals, planes_fname + ".ply", n_planes);
 }

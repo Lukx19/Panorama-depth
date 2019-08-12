@@ -19,9 +19,9 @@ class Dataset:
 
     def __init__(self, name, mode, datasetDirectories, filenamesFileDirectory, filenamesFileName):
         self.overThresh = 8.0
-        self.underThresh = 0.5
-        self.overPercent = 5
-        self.underPercent = 5
+        self.underThresh = 0.1
+        self.overPercent = 10
+        self.underPercent = 10
         self.pairIds = []
         self.name = name
         self.delimiter = " "
@@ -54,15 +54,18 @@ class Dataset:
         #     "edb61af9bebd428aa21a59c4b2597b201"
         # ]
         self.ignoreList = [
-            "area_3",                                # Stanford
+            "Stanford"
+            # "area_3",                                # Stanford
             # "fa5f164b48f043c6b2b0bb9e8631a4821",    # Matterport
             # "a641c3f4647545a2a4f5c50f5f5fbb571",    # Matterport
             # "e0166dba74ee42fd80fccc26fe3f02c81",    # Matterport
-            "B6ByNegPMKs",  # Matterport
-            "jtcxE69GiFV",  # Matterport
-            "yqstnuAEVhm",  # Matterport
-            "306f740ae757d660135b3e88cdae39551",    # SunCG
-            "308ed5f320429e1295db6c872b27ad0b1"     # SunCG
+            # "B6ByNegPMKs",  # Matterport
+            # "jtcxE69GiFV",  # Matterport good
+            # "yqstnuAEVhm",  # Matterport
+            # "ur6pFq6Qu1A", # Matterport good
+            # "x8F5xyUWy9e", # Matterport good
+            # "306f740ae757d660135b3e88cdae39551",    # SunCG
+            # "308ed5f320429e1295db6c872b27ad0b1"     # SunCG
         ]
         self.validationList = []
         self.dataDict = {}
@@ -162,6 +165,8 @@ class Dataset:
                   " depth files in Test-set: {}".format(len(self.testDict[pairID + "_color"])))
 
     def outCondition(self, depthMap):
+        # makes sure that we do not count top and bottom missing mask
+        depthMap = depthMap[40:-40, :]
         return (outliers.percentageOverThreshold(depthMap, self.overThresh) > self.overPercent) or (outliers.percentageUnderThreshold(depthMap, self.underThresh) > self.underPercent)
 
     def getZippedData(self, dictionary):

@@ -198,40 +198,73 @@ def huberLoss(pred, target, mask):
     assert (below_tresh > 0).all()
     return below_tresh + above_tresh
 
-# https://github.com/kmaninis/OSVOS-PyTorch
 
-
-def class_balanced_cross_entropy_loss(output, label, size_average=True, batch_average=True):
+def balancedCrossEntropy(output, label, average=True):
     """Define the class balanced cross entropy loss to train the network
     Args:
-    output: Output of the network
-    label: Ground truth label
+    output: Output of the network BxCxd1xd2xd3,... where C is number of classes
+    label: Ground truth label Bxd1xd2xd3 with integers in range [0,C-1]
     Returns:
     Tensor that evaluates the loss
     """
 
-    labels = label.float()
+    label = label.long()
+    label_flat = label.reshape(-1)
+    labels_per_class = torch.bincount(label_flat).float()
 
-    num_labels_pos = torch.sum(labels)
-    num_labels_neg = torch.sum(1.0 - labels)
-    num_total = num_labels_pos + num_labels_neg
+    all_labels = torch.sum(labels_per_class)
+    weights_per_class = labels_per_class / all_labels
+    # print(weights_per_class)
+    if average:
+        return F.cross_entropy(output, label, weight=weights_per_class.detach(), reduction='mean')
+    else:
+        return F.cross_entropy(output, label, weight=weights_per_class.detach(), reduction='none')
 
-    output_gt_zero = torch.ge(output, 0).float()
 
-    loss_val = torch.mul(output, (labels - output_gt_zero)) - torch.log(
-        1 + torch.exp(output - 2 * torch.mul(output, output_gt_zero)))
+def balancedBCE(output, label, average=True):
+    """Define the class balanced binary cross entropy loss to train the network
+    Args:
+    output: Output of the network BxN
+    label: Ground truth label BxN
+    Returns:
+    Tensor that evaluates the loss
+    """
 
-    loss_pos = torch.sum(-torch.mul(labels, loss_val))
-    loss_neg = torch.sum(-torch.mul(1.0 - labels, loss_val))
+    # label = label
+    b, n = label.size()
+    weight_per_element = torch.sum(label, dim=1, keepdim=True)
+    weight_per_element = 1 - (weight_per_element / n)
+    # print(weight_per_element)
+    if average:
+        return F.binary_cross_entropy_with_logits(output, label,
+                                                  weight=weight_per_element.detach(),
+                                                  reduction='mean')
+    else:
+        return F.binary_cross_entropy_with_logits(output, label,
+                                                  weight=weight_per_element.detach(),
+                                                  reduction='none')
+    # labels = label.float()
 
-    final_loss = num_labels_neg / num_total * loss_pos + num_labels_pos / num_total * loss_neg
+    # num_labels_pos = torch.sum(labels)
+    # num_labels_neg = torch.sum(1.0 - labels)
+    # num_total = num_labels_pos + num_labels_neg
 
-    if size_average:
-        final_loss /= int(np.prod(label.size()))
-    elif batch_average:
-        final_loss /= int(label.size(0))
+    # output_gt_zero = torch.ge(output, 0).float()
 
-    return final_loss
+    # loss_val = torch.mul(output, (labels - output_gt_zero)) - torch.log(
+    #     1 + torch.exp(output - 2 * torch.mul(output, output_gt_zero)))
+
+    # loss_pos = torch.sum(-torch.mul(labels, loss_val))
+    # loss_neg = torch.sum(-torch.mul(1.0 - labels, loss_val))
+
+    # final_loss = num_labels_neg / num_total * loss_pos + num_labels_pos / num_total * loss_neg
+
+    # if size_average:
+    #     final_loss /= int(np.prod(label.size()))
+    # elif batch_average:
+    #     final_loss /= int(label.size(0))
+
+    # return final_loss
     #  ----------------------------------------------------------
 
 
@@ -316,13 +349,13 @@ def revisLoss(pred, gt, mask, sobel, adaptive=False):
     loss_dy = validMean(loss_dy)
 
     loss_normal = cosineLoss(output_normal, depth_normal, dim=1, mean_fce=None)
-    histograms["revis_normal_similarity"] = loss_normal.detach().clone() * mask
+    histograms["revis_normal_similarity"] = loss_normal.detach().clone()
     loss_normal = validMean(loss_normal)
     # print(loss_depth, loss_normal, loss_dx, loss_dy)
     losses = {
         "revis_l1_dist": loss_depth,
         # "revis_huber_dist": loss_depth,
-        "revis_dxdy": loss_dx + loss_dy,
+        # "revis_dxdy": loss_dx + loss_dy,
         "revis_normal_similarity": loss_normal,
     }
     return losses, histograms
@@ -410,7 +443,7 @@ class SphericalNormalsLoss(nn.Module):
     def forward(self, predictions, data):
         losses = {}
         histograms = {}
-        planes = data.get(DataType.Planes, scale=1)[0]
+        # planes = data.get(DataType.Planes, scale=1)[0]
         # 1= pixels where are some planes 0 = otherwise
         # plane_mask = torch.sign(torch.sum(planes, dim=1))
         mask = data.get(DataType.Mask, scale=1)[0]
@@ -420,18 +453,19 @@ class SphericalNormalsLoss(nn.Module):
         gt_normals_emb = torch.abs(gt_normals) * mask
         gt_classes = signToLabel(gt_normals)
 
-        planeMean = createPlaneMean(mask, planes)
+        # planeMean = createPlaneMean(mask, planes)
+        validMean = createValidMean(mask)
 
         # pred_normals are in range [0,1] calculate cosine similarity
         regression_loss = cosineLoss(pred_normals_emb, gt_normals_emb, dim=1, mean_fce=None)
         histograms["plane_normal_regression"] = regression_loss.detach()
-        regression_loss = planeMean(regression_loss)
+        regression_loss = validMean(regression_loss)
         losses["plane_normal_regression"] = regression_loss
 
         # classification of normal signs
         class_loss = F.cross_entropy(pred_classes, gt_classes, reduction='none')
         histograms["plane_normal_class"] = class_loss.detach()
-        losses["plane_normal_class"] = planeMean(class_loss)
+        losses["plane_normal_class"] = validMean(class_loss)
         return losses, histograms
 
 
@@ -453,12 +487,12 @@ class CosineNormalsLoss(nn.Module):
 
         b, _, h, w = pred_normals.size()
         validMean = createValidMean(mask)
-        planeMean = createPlaneMean(mask, planes)
+        # planeMean = createPlaneMean(mask, planes)
         similarity = cosineLoss(pred_normals, gt_normals, dim=1, mean_fce=None)
         similarity *= plane_mask
         histograms["Pixel_normal_similarity_loss"] = similarity.detach()
         losses["Pixel_normal_similarity_loss"] = validMean(similarity)
-        losses["Plane_normal_similarity_loss"] = planeMean(similarity)
+        # losses["Plane_normal_similarity_loss"] = planeMean(similarity)
 
         # plane_mask_ext = torch.reshape(plane_mask, (b, 1, h, w))
         # pred_normals_2x = F.avg_pool2d(pred_normals * plane_mask_ext, kernel_size=3,
@@ -511,6 +545,10 @@ class PlanarLoss(nn.Module):
     def __init__(self, width=512, height=256):
         super(PlanarLoss, self).__init__()
         self.to3d = Depth2Points(height, width)
+        self.to3d_2x = Depth2Points(height // 2, width // 2)
+        self.downsample = lambda tensor: F.interpolate(tensor, scale_factor=0.5, mode="nearest")
+
+        self.all_scales = True
 
     def averageNormals(self, normals, planes):
         avg_plane_normal = torch.mean(planes * normals, dim=3)
@@ -527,6 +565,7 @@ class PlanarLoss(nn.Module):
         # 1= pixels where are some planes 0 = otherwise
         plane_mask = torch.sign(torch.sum(planes, dim=1))
         mask = data.get(DataType.Mask, scale=1)[0]
+        mask_2x = data.get(DataType.Mask, scale=2)[0]
 
         gt_depth = data.get(DataType.Depth, scale=1)[0] * mask
         gt_normals = data.get(DataType.Normals)[0] * mask
@@ -535,36 +574,77 @@ class PlanarLoss(nn.Module):
         # print(torch.sum(plane_mask), torch.sum(gt_seg), torch.sum(mask))
         b, ch, h, w = pred_normals.size()
 
-        # validMean = createValidMean(plane_mask)
-        planeMean = createPlaneMean(mask, planes)
-
-        pred_points = self.to3d(pred_depth)
         with torch.no_grad():
             gt_points = self.to3d(gt_depth)
+            gt_points_2x = self.to3d_2x(self.downsample(gt_depth))
+            gt_normals_2x = self.downsample(gt_normals) * mask_2x
+            planes_2x = self.downsample(planes)
+            plane_mask_2x = torch.sign(torch.sum(planes_2x, dim=1))
+
+        validMean = createValidMean(plane_mask)
+        validMean2x = createValidMean(plane_mask_2x)
+        planeMean = createPlaneMean(mask, planes)
+        planeMean2x = createPlaneMean(mask_2x, planes_2x)
+
+        # for i, (scale, pred) in enumerate(predictions.queryType(DataType.Depth)):
+        #     if self.all_scales is False and scale != 1:
+        #         continue
+
+        #     # if self.all_scales is False and done is True:
+        #         # break
+
+        #     if scale == "2":
+        #         gt_pts = gt_points_2x
+        #         normal = gt_normals_2x
+        #         loc_mask = plane_mask_2x
+        #         pred_pts = self.to3d_2x(pred)
+        #         # mean = planeMean2x
+        #         mean = validMean2x
+        #     elif scale == "1":
+        #         gt_pts = gt_points
+        #         normal = gt_normals
+        #         loc_mask = plane_mask
+        #         pred_pts = self.to3d(pred)
+        #         # mean = planeMean
+        #         mean = validMean
+        #     else:
+        #         continue
+
+        #     distance = (pred_pts - gt_pts) * normal
+        #     distace_to_gt_plane = (torch.sum(distance, dim=1))
+        #     distace_to_gt_plane = distace_to_gt_plane ** 2
+
+        #     distace_to_gt_plane *= loc_mask
+
+        #     histograms[f"Pixel_dist_plane_loss_s{scale}_{i}"] = distace_to_gt_plane.detach()
+        #     # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
+        #     losses[f"Plane_dist_plane_loss_s{scale}_{i}"] = mean(distace_to_gt_plane)
 
         # TODO: Use ground truth points which are distance to plane and not GT distance in general.
         #  This should improve performance on low quality GT data
+        pred_points = self.to3d(pred_depth)
         distance = (pred_points - gt_points) * gt_normals
         distace_to_gt_plane = (torch.sum(distance, dim=1))
         distace_to_gt_plane = distace_to_gt_plane ** 2
 
         distace_to_gt_plane *= plane_mask
 
-        histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach()
+        histograms["Pixel_dist_plane_loss"] = distace_to_gt_plane.detach() * plane_mask
         # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
 
         losses["Plane_dist_plane_loss"] = planeMean(distace_to_gt_plane)
+
         # planeMean = createPlaneMean(mask, planes, adaptive=True)
         # losses["Plane_dist_plane_loss_Ad"] = planeMean(distace_to_gt_plane)
 
-        distance_btw_planes = pred_points * makeUnitVector(pred_normals) - gt_points * gt_normals
-        distance_btw_planes = (torch.sum(distance_btw_planes, dim=1))
-        distance_btw_planes = distance_btw_planes ** 2
+        # distance_btw_planes = pred_points * makeUnitVector(pred_normals) - gt_points * gt_normals
+        # distance_btw_planes = (torch.sum(distance_btw_planes, dim=1))
+        # distance_btw_planes = distance_btw_planes ** 2
 
-        distance_btw_planes *= plane_mask
+        # distance_btw_planes *= plane_mask
 
-        # histograms["Pixel_dist_btw_plane_loss"] = distance_btw_planes.detach()
-        # losses["Pixel_dist_plane_loss"] = validMean(distace_to_gt_plane)
+        # histograms["Plane_dist_btw_plane_loss"] = distance_btw_planes.detach() * plane_mask
+        # losses["Plane_dist_btw_plane_loss"] = validMean(distance_btw_planes)
 
         # losses["Plane_dist_btw_plane_loss"] = planeMean(distance_btw_planes)
 
@@ -603,7 +683,7 @@ class PlaneNormSegLoss(nn.Module):
         else:
             self.grad_loss = MultiScaleL2Loss([0.535, 0.272], [0.134, 0.068])
 
-        self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
+        # self.depth_cosine_loss = CosineDepthNormalsLoss(height, width)
         self.planar_loss = PlanarLoss(width, height)
 
     def forward(self, predictions, data):
@@ -612,7 +692,11 @@ class PlaneNormSegLoss(nn.Module):
         mask = data.get(DataType.Mask, scale=1)[0]
         gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
         pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
-        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+
+        b, c, h, w = gt_seg.size()
+        gt_seg = torch.reshape(gt_seg, (b, -1))
+        pred_seg = torch.reshape(pred_seg, (b, -1))
+        seg_total_loss = balancedBCE(pred_seg, gt_seg, average=True)
         losses["Segmentation_Loss"] = seg_total_loss
 
         # l, h = self.depth_cosine_loss(predictions, data)
@@ -653,7 +737,7 @@ class TwoBranchLoss(nn.Module):
         mask = data.get(DataType.Mask, scale=1)[0]
         gt_seg = data.get(DataType.PlanarSegmentation)[0] * mask
         pred_seg = predictions.get(DataType.PlanarSegmentation)[0] * mask
-        seg_total_loss = class_balanced_cross_entropy_loss(pred_seg, gt_seg)
+        seg_total_loss = balancedBCE(pred_seg, gt_seg)
         losses["Segmentation_Loss"] = seg_total_loss
 
         # l, h = self.depth_cosine_loss(predictions, data)
