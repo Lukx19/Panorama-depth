@@ -12,7 +12,7 @@ from run_utils import parseArgs, setupPipeline, setupGPUDevices
 import subprocess
 import numpy as np
 import pickle as pl
-from visualizations import depthBasedHistogram
+from visualizations import depthBasedHistogram, saveHistogram
 # --------------
 # PARAMETERS
 # --------------
@@ -112,7 +112,7 @@ def test(args=None, best_model=True):
         visualization_freq=visualization_freq,
         validation_sample_freq=validation_sample_freq)
 
-    report, (files_scores, gt_depths, depth_diffs, angle_diffs) = trainer.validate(
+    report, (files_scores, gt_depths, depth_diffs, angle_diffs, scales) = trainer.validate(
         checkpoint_path=checkpoint, save_all_predictions=args.save_results, extra_stats=args.save_results)
     with open(osp.join(results_dir, 'metrics.txt'), 'w') as f:
         f.write(json.dumps(report, indent=2))
@@ -129,6 +129,8 @@ def test(args=None, best_model=True):
     with open(f"{results_dir}/file_scores.txt", "w") as f:
         json.dump(files_scores, f)
 
+    saveHistogram(osp.join(results_dir, 'scale_hist.png'), scales,
+                  xlabel="Scale", x_range=(0.5, 1.5))
     if args.save_results:
         pl.dump((gt_depths, depth_diffs, angle_diffs),
                 open(osp.join(results_dir, 'histogram_data.pickle'), "wb"))

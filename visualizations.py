@@ -16,6 +16,7 @@ from multiprocessing import Pool
 import numpy as np
 import pickle as pl
 from scipy import stats
+from matplotlib.ticker import PercentFormatter
 
 
 def depthBasedHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
@@ -60,12 +61,12 @@ def depthBasedHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
     pl.dump((fig, ax), open(pickle_filename, 'wb'))
 
 
-def depthCountHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
-                        title="Title", log_scale=False):
+def saveBinnedHistogram(filename, x, vals,
+                        xlabel='Distance from camera [m]', ylabel="Mean error",
+                        title="Title", log_scale=False, x_range=(0.0, 8.0), bins=100):
     fig, ax = plt.subplots()
-    bins = 100
-    bin_means, bin_edges, binnumber = stats.binned_statistic(gt_depths, diffrence,
-                                                             range=(0.0, 8.0), statistic='count',
+    bin_means, bin_edges, binnumber = stats.binned_statistic(x, vals,
+                                                             range=x_range, statistic='count',
                                                              bins=bins)
 
     bin_labels = [bin_edges[i] + (bin_edges[i + 1] - bin_edges[i]) / 2
@@ -73,11 +74,11 @@ def depthCountHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
     # print(bin_means)
     ax.bar(bin_labels, bin_means, color='deepskyblue', width=0.2)
     ax.set_ylabel(ylabel)
-    ax.set_xlabel('Distance from camera [m]')
-    ax.set_xticks(np.linspace(0.0, 8.0, 10))
+    ax.set_xlabel(xlabel)
+    ax.set_xticks(np.linspace(x_range[0], x_range[1], 10))
 
     # ax.set_ylim((0, max_y))
-    ax.set_xlim((1, 8.0))
+    ax.set_xlim(x_range)
     # ax.set_xticklabels(labels)
     ax.set_title(title)
     ax.yaxis.grid(True)
@@ -86,6 +87,37 @@ def depthCountHistogram(filename, gt_depths, diffrence, ylabel="Mean error",
     fig.savefig(filename)
     fig.show()
     # with open(filename.replace('.png', '.pickle'), 'w') as f:
+    pickle_filename = filename.replace('.png', '.pickle')
+    pl.dump((fig, ax), open(pickle_filename, 'wb'))
+
+
+def saveHistogram(filename, vals,
+                  xlabel=None, ylabel=None,
+                  title=None, x_range=(0.0, 8.0), bins=50):
+    fig, ax = plt.subplots()
+    n, bins, patches = ax.hist(vals, bins=bins, range=x_range,
+                               weights=np.ones(len(vals)) / len(vals),
+                               density=False, facecolor='deepskyblue', alpha=0.75)
+    if ylabel is not None:
+        ax.set_ylabel(ylabel)
+    if xlabel is not None:
+        ax.set_xlabel(xlabel)
+    ax.set_xticks(np.linspace(x_range[0], x_range[1], 10))
+
+    # ax.set_ylim((0, max_y))
+    ax.set_xlim(x_range)
+    # ax.set_xticklabels(labels)
+    if title is not None:
+        ax.set_title(title)
+    ax.yaxis.grid(True)
+    ax.yaxis.set_major_formatter(PercentFormatter(xmax=1))
+
+    ax.tick_params(axis='both', which='major', labelsize=10)
+    ax.tick_params(axis='both', which='minor', labelsize=8)
+
+    fig.tight_layout()
+    fig.savefig(filename)
+
     pickle_filename = filename.replace('.png', '.pickle')
     pl.dump((fig, ax), open(pickle_filename, 'wb'))
 

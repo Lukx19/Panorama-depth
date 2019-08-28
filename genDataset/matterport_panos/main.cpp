@@ -1,11 +1,11 @@
-﻿#include <Eigen/Geometry>
-#include <boost/algorithm/algorithm.hpp>
+﻿#include <boost/algorithm/algorithm.hpp>
 #include <boost/algorithm/string.hpp>
 #include <boost/algorithm/string/find.hpp>
 #include <boost/algorithm/string/predicate.hpp>
 #include <boost/date_time/posix_time/posix_time.hpp>
 #include <boost/date_time/posix_time/ptime.hpp>
 #include <boost/filesystem.hpp>
+#include <eigen3/Eigen/Geometry>
 #include <iostream>
 #include <opencv2/core/eigen.hpp>
 #include <opencv2/opencv.hpp>
@@ -16,7 +16,6 @@
 #define cimg_use_opencv
 #define cimg_plugin "cvMat_plugin.h"
 #include "CImg.h"
-
 
 #define IMG_WIDTH 1280
 #define IMG_HEIGHT 1024
@@ -81,7 +80,7 @@ void computeInitPano(
                       Eigen::aligned_allocator<Eigen::Affine3f>>
         &camera_poses_tmp,
     const std::vector<std::vector<float>> &camera_intrinsics,
-    cv::Mat &pano_color_init, cv::Mat &pano_depth_init,cv::Mat & missing_mask);
+    cv::Mat &pano_color_init, cv::Mat &pano_depth_init, cv::Mat &missing_mask);
 
 void blenderPano(const std::vector<cv::Rect> &rects,
                  const std::vector<cv::Mat> &imgs,
@@ -105,7 +104,8 @@ void loadScanNames(const std::string path_camera_info,
   std::ifstream fin;
   fin.open(path_camera_info);
   if (!fin) {
-    std::cerr << "Couldn't open " << path_camera_info << " for reading"<<std::endl;
+    std::cerr << "Couldn't open " << path_camera_info << " for reading"
+              << std::endl;
     return;
   }
 
@@ -162,8 +162,8 @@ void computeRect(const Eigen::Matrix3f &rot, const float radius_size,
   float miny = 999999;
   float maxx = -999999;
   float maxy = -999999;
-  for (int i = 10; i < width-10; i++) {
-    for (int j = 10; j < height-10; j++) {
+  for (int i = 0; i < width; i++) {
+    for (int j = 0; j < height; j++) {
       float z = 1;
       float x = (i - cx) / fx;
       float y = (j - cy) / fy;
@@ -196,7 +196,7 @@ void computePanos(const std::string &path_camera_info,
   boost::filesystem::path pt(path_camera_info);
   std::string scan_folder = pt.parent_path().parent_path().c_str();
   std::string scan_name = pt.stem().c_str();
-  std::cout << scan_folder<<"   "<< scan_name << std::endl;
+  std::cout << scan_folder << "   " << scan_name << std::endl;
   std::vector<std::string> rot_names;
   std::vector<std::vector<float>> camera_intrinsics;
   std::vector<std::vector<float>> camera_poses;
@@ -231,19 +231,19 @@ void computePanos(const std::string &path_camera_info,
     cv::Mat pano_color_blender;
     computePano(scan_folder, rot_name, camera_poses_sub, camera_intrinsics_sub,
                 pano_color_init, pano_depth_init, pano_color_blender);
-    std::string base_name = output_dir + std::string("/") + scan_name + std::string("_") +
-                    rot_name;
-    // cv::imwrite(output_dir + std::string("/") + scan_name + std::string("_") +
+    std::string base_name =
+        output_dir + std::string("/") + scan_name + std::string("_") + rot_name;
+    // cv::imwrite(output_dir + std::string("/") + scan_name + std::string("_")
+    // +
     //                 rot_name + std::string("_color_init.png"),
     //             pano_color_init);
-    // cv::imwrite( base_name + std::string("_depth_0_Left_Down.png"),
+    // cv::imwrite(base_name + std::string("_depth_0_Left_Down.png"),
     //             pano_depth_init);
-    cv::imwrite( base_name + std::string("_color_0.png"),
-                pano_color_blender);
+    cv::imwrite(base_name + std::string("_color_0.png"), pano_color_blender);
     // cv::imwrite(base_name + std::string("_depth_vis.png"),
     //             visDepth(pano_depth_init));
     cv::Mat metric_depth;
-    pano_depth_init.convertTo(metric_depth,CV_32FC1);
+    pano_depth_init.convertTo(metric_depth, CV_32FC1);
     metric_depth = metric_depth / 4000;
     CImg<float> depth(metric_depth);
     depth.save_tiff((base_name + std::string("_depth_0.tiff")).c_str(), 1);
@@ -272,33 +272,36 @@ void computePano(const std::string &scan_folder, const std::string &rot_name,
   cv::resize(pano_color_blender, pano_color_blender, pano_color_init.size());
   pano_depth_blender = pano_depth_init;
 
-
   int border = ((pano_color_init.cols / 2) - pano_color_init.rows) / 2;
-  cv::copyMakeBorder(pano_color_blender, pano_color_blender, border, border,
-               0, 0, cv::BORDER_CONSTANT,0);
-  cv::copyMakeBorder(pano_depth_blender, pano_depth_blender, border, border,
-               0, 0, cv::BORDER_CONSTANT,0);
-  cv::copyMakeBorder(wrap_missing_mask, wrap_missing_mask, border, border,
-               0, 0, cv::BORDER_CONSTANT,0);
+  cv::copyMakeBorder(pano_color_blender, pano_color_blender, border, border, 0,
+                     0, cv::BORDER_CONSTANT, 0);
+  cv::copyMakeBorder(pano_depth_blender, pano_depth_blender, border, border, 0,
+                     0, cv::BORDER_CONSTANT, 0);
+  cv::copyMakeBorder(wrap_missing_mask, wrap_missing_mask, border, border, 0, 0,
+                     cv::BORDER_CONSTANT, 0);
 
-  cv::Size final_size = cv::Size(PANO_WIDTH,PANO_HEIGHT);
-  cv::resize(pano_color_blender, pano_color_blender, final_size,0,0,cv::INTER_AREA);
-  cv::resize(pano_depth_blender, pano_depth_blender, final_size,0,0,cv::INTER_NEAREST);
-  cv::resize(wrap_missing_mask, wrap_missing_mask, final_size,0,0,cv::INTER_NEAREST);
-  // cv::inpaint(pano_depth_blender,wrap_missing_mask,pano_depth_blender,10,cv::INPAINT_NS);
+  cv::Size final_size = cv::Size(PANO_WIDTH, PANO_HEIGHT);
+  cv::resize(pano_color_blender, pano_color_blender, final_size, 0, 0,
+             cv::INTER_AREA);
+  cv::resize(pano_depth_blender, pano_depth_blender, final_size, 0, 0,
+             cv::INTER_NEAREST);
+  cv::resize(wrap_missing_mask, wrap_missing_mask, final_size, 0, 0,
+             cv::INTER_NEAREST);
+  // cv::inpaint(pano_depth_blender, wrap_missing_mask, pano_depth_blender, 10,
+  // cv::INPAINT_NS);
   // pano_depth_blender = wrap_missing_mask;
 
   int offset = 40;
-  pano_depth_blender(cv::Rect(0,0,PANO_WIDTH, offset)) = cv::Scalar::all(0);
-  pano_depth_blender(cv::Rect(0,PANO_HEIGHT-offset,PANO_WIDTH, offset)) = cv::Scalar::all(0);
-
-
+  pano_depth_blender(cv::Rect(0, 0, PANO_WIDTH, offset)) = cv::Scalar::all(0);
+  pano_depth_blender(cv::Rect(0, PANO_HEIGHT - offset, PANO_WIDTH, offset)) =
+      cv::Scalar::all(0);
 }
 void loadImages(const std::string &scan_folder, const std::string &rot_name,
                 std::vector<cv::Mat> &imgs, std::vector<cv::Mat> &depths) {
   int crop_width = (IMG_WIDTH - CROPPED_IMG_WIDTH) / 2;
   int crop_height = (IMG_HEIGHT - CROPPED_IMG_HEIGHT) / 2;
-  cv::Rect crop = cv::Rect(crop_width,crop_height,IMG_WIDTH - crop_width ,IMG_HEIGHT- crop_height);
+  cv::Rect crop = cv::Rect(crop_width, crop_height, IMG_WIDTH - crop_width,
+                           IMG_HEIGHT - crop_height);
 
   for (int m = 0; m < LEVEL; m++) {
     for (int n = 0; n < IMAGE_NUM_PER_LEVEL; n++) {
@@ -364,8 +367,7 @@ void computeInitPano(
                       Eigen::aligned_allocator<Eigen::Affine3f>>
         &camera_poses_tmp,
     const std::vector<std::vector<float>> &camera_intrinsics,
-    cv::Mat &pano_color_init, cv::Mat &pano_depth_init,cv::Mat & missing_mask)
-{
+    cv::Mat &pano_color_init, cv::Mat &pano_depth_init, cv::Mat &missing_mask) {
   float minx = 99999;
   float maxx = -99999;
   float miny = 999999;
@@ -382,13 +384,13 @@ void computeInitPano(
       maxy = rect.y + rect.height;
   }
   int width = maxx - minx;
-  int height = maxy-miny;
+  int height = maxy - miny;
   pano_color_init = cv::Mat::zeros(height, width, CV_8UC3);
   pano_depth_init = cv::Mat::zeros(height, width, CV_16UC1);
   missing_mask = cv::Mat(height, width, CV_16UC1);
-  missing_mask = cv::Scalar(255);
-// rects.size()
-  for (size_t m = 0; m < rects.size() ; ++m) {
+  missing_mask = cv::Scalar(0);
+  // rects.size()
+  for (size_t m = 0; m < rects.size(); ++m) {
 
     Eigen::Affine3f camera_pose = camera_poses_tmp[m];
     std::vector<float> intrinsics_vals = camera_intrinsics[m];
@@ -420,8 +422,8 @@ void computeInitPano(
         // float z_real2 = x_real1 * camera_pose(2, 0) +
         //                 y_real1 * camera_pose(2, 1) +
         //                 z_real1 * camera_pose(2, 2);
-        float z_real2 =
-            std::sqrt(x_real1 * x_real1 + y_real1 * y_real1 + z_real1 * z_real1);
+        float z_real2 = std::sqrt(x_real1 * x_real1 + y_real1 * y_real1 +
+                                  z_real1 * z_real1);
 
         float u = RADIUS * atan2f(x1, z1);
         float w = y1 / sqrtf(x1 * x1 + y1 * y1 + z1 * z1);
@@ -430,27 +432,33 @@ void computeInitPano(
             (v - miny) >= 0 && (v - miny) < pano_color_init.rows) {
           pano_color_init.at<cv::Vec3b>(v - miny, u - minx) =
               image_color.at<cv::Vec3b>(r, c);
-          pano_depth_init.at<ushort>(v - miny, u - minx) =
-              ushort(abs(z_real2*4000));
+          ushort depth = ushort(abs(z_real2 * 4000));
+          if (depth > 0) {
+            pano_depth_init.at<ushort>(v - miny, u - minx) = depth;
+          }
         }
       }
     }
   }
   cv::Mat zero_depth;
-  cv::Mat missing_depth;
-  cv::threshold(pano_depth_init,zero_depth,0,255,cv::THRESH_BINARY);
-  zero_depth.convertTo(zero_depth,CV_8UC1,1,0);
-  cv::Mat element = cv::getStructuringElement( cv::MORPH_RECT,
-                       cv::Size( 3, 3 ),
-                       cv::Point( -1, -1 ) );
-  cv::dilate(zero_depth, missing_depth, element, cv::Point(-1, -1), 10);
+  // cv::Mat missing_depth;
+  cv::Mat black_parts;
+  cv::transform(pano_color_init, black_parts, cv::Matx13f(1, 1, 1));
+  cv::threshold(black_parts, zero_depth, 0, 255, cv::THRESH_BINARY_INV);
+  // int missing_poles = 50;
+  // for (int i = 0; i < missing_poles; i++)
+  //   zero_depth.row(i).setTo(0);
+  // for (int i = zero_depth.rows - missing_poles; i < zero_depth.rows; i++)
+  //   zero_depth.row(i).setTo(0);
+  zero_depth.convertTo(missing_mask, CV_8UC1, 1, 0);
+  // cv::Mat element = cv::getStructuringElement(cv::MORPH_RECT, cv::Size(3, 3),
+  // cv::Point(-1, -1));
+  // cv::dilate(zero_depth, missing_depth, element, cv::Point(-1, -1), 10);
   // cv::substract(cv::Scalar(255),missing_depth,missing_depth);
   // cv::substract(cv::Scalar(255),zero_depth,zero_depth);
 
-  missing_mask=(cv::Scalar(255) - zero_depth) - (cv::Scalar(255) - missing_depth);
-
-
-
+  // missing_mask =
+  // (cv::Scalar(255) - zero_depth) - (cv::Scalar(255) - missing_depth);
 }
 void blenderPano(const std::vector<cv::Rect> &rects,
                  const std::vector<cv::Mat> &imgs,
@@ -575,9 +583,9 @@ cv::Mat visDepth(const cv::Mat &depth) {
 }
 
 int main(int argc, char **argv) {
-  cv::setNumThreads(2*cv::getNumThreads() / 3);
-  std::vector<std::string> args(argv, argv+argc);
-  std::string camera_config_path =args[1];
+  cv::setNumThreads(2 * cv::getNumThreads() / 3);
+  std::vector<std::string> args(argv, argv + argc);
+  std::string camera_config_path = args[1];
   std::string output_dir = args[2];
   computePanos(camera_config_path, output_dir);
   return 0;

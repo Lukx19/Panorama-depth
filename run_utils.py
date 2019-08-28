@@ -192,6 +192,8 @@ def parseArgs(test=False, predict=False):
 
     parser.add_argument('--model_opts', default='', type=str,
                         help='JSON with model parameters')
+    parser.add_argument('--seed', default=19,
+                        type=float, help='Seeed')
 
     if test:
         parser.add_argument('--test_list', type=str,
@@ -216,7 +218,7 @@ def parseArgs(test=False, predict=False):
     else:
         parser.add_argument('--train_list', type=str,
                             # default="./data_splits/original_p100_d20_train_split.txt",
-                            default="./data_splits/robust_exp_train.txt",
+                            default="./data_splits/robust_exp.txt",
                             help='Trainig list with data filenames used for training')
 
         parser.add_argument('--val_list', type=str,
@@ -247,8 +249,7 @@ def parseArgs(test=False, predict=False):
         parser.add_argument('--epochs', default=10, type=int)
         parser.add_argument('--lr', default=3e-3,
                             type=float, help='Learning rate')
-        parser.add_argument('--seed', default=19,
-                            type=float, help='Seeed')
+
         parser.add_argument('--disable_visdom', action="store_true", default=False,
                             help='Disable use of visdom server in training')
 

@@ -52,12 +52,12 @@ class SmoothConv(nn.Module):
     def normalDist(self, x, sigma):
         return torch.exp((-x**2) / (2 * sigma**2))
 
-    def forward(self, points, normals, segmentation=None, mask=None):
+    def forward(self, points, normals, segmentation=None, mask=None, multiplier=1):
         _, _, height, width = points.size()
         if segmentation is None:
-            combined_data = torch.cat((points, normals.clone()), dim=1)
+            combined_data = torch.cat((points, multiplier * normals.clone()), dim=1)
         else:
-            combined_data = torch.cat((points, normals.clone(), segmentation), dim=1)
+            combined_data = torch.cat((points, multiplier * normals.clone(), segmentation), dim=1)
 
         unfolded = self.unfold(combined_data)
         b, n, k = unfolded.size()
@@ -219,7 +219,8 @@ class Points2Depths(nn.Module):
             planar_depth = torch.sum(centroid_normals, dim=1, keepdim=True)
             planar_depth = planar_depth / norm
             planar_depth = torch.reshape(planar_depth, (b, 1, h, w))
-            depth_diff = torch.abs(depth - planar_depth)
-            depth = torch.where(depth_diff > 0.8, depth, planar_depth)
+            depth = planar_depth
+            # depth_diff = torch.abs(depth - planar_depth)
+            # depth = torch.where(depth_diff > 0.8, depth, planar_depth)
 
         return depth

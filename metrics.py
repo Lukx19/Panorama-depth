@@ -9,6 +9,11 @@ from skimage import feature
 # ==========================
 
 
+def mask_depth(depth, mask_thresh):
+    mask = (depth < mask_thresh) & (depth > 0)
+    return mask
+
+
 def abs_rel_error(pred, gt, mask):
     '''Compute absolute relative difference error'''
     return ((pred[mask > 0] - gt[mask > 0]).abs() / gt[mask > 0]).mean()

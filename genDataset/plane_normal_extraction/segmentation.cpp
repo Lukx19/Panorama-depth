@@ -158,14 +158,32 @@ void saveCurvature(
     const std::string &filename, const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
     const pcl::PointCloud<pcl::PrincipalCurvatures>::Ptr &curvature,
     size_t width, size_t height) {
-  CImg<float> curvature_img(width, height, 1, 2, 0.f);
+  CImg<uint32_t> curvature_img(width, height, 1, 1, 0.f);
   for (size_t i = 0; i < cloud->points.size(); ++i) {
     PointXYZLUV pt = cloud->at(i);
     pcl::PrincipalCurvatures c_i = curvature->at(i);
-    curvature_img(pt.u, pt.v, 0, 0) = c_i.principal_curvature_x;
-    curvature_img(pt.u, pt.v, 0, 1) = c_i.principal_curvature_y;
+    float norm = c_i.pc1 + c_i.pc2;
+    float curve = c_i.pc1 * 1024;
+    curvature_img(pt.u, pt.v, 0, 0) = static_cast<uint8_t>(std::truncf(curve));
+    // curvature_img(pt.u, pt.v, 0, 1) = c_i.principal_curvature_y;
   }
-  curvature_img.save_tiff(filename.c_str(), 1);
+  curvature_img.save_png(filename.c_str(), 1);
+}
+
+void saveCurvature(const std::string &filename,
+                   const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
+                   const pcl::PointCloud<pcl::Normal>::Ptr &normals,
+                   size_t width, size_t height) {
+  CImg<uint32_t> curvature_img(width, height, 1, 1, 0.f);
+  for (size_t i = 0; i < cloud->points.size(); ++i) {
+    PointXYZLUV pt = cloud->at(i);
+    pcl::Normal n_i = normals->at(i);
+    float curvature = n_i.curvature * 1024;
+    curvature_img(pt.u, pt.v, 0, 0) =
+        static_cast<uint8_t>(std::truncf(curvature));
+    // curvature_img(pt.u, pt.v, 0, 1) = c_i.principal_curvature_y;
+  }
+  curvature_img.save_png(filename.c_str(), 1);
 }
 
 auto convertToPcl(const std::string &tiff_file)
@@ -298,7 +316,7 @@ auto estimatePlanesGrow(const pcl::PointCloud<PointXYZLUV>::ConstPtr &cloud_in,
   std::cout << "First cluster has " << clusters[0].indices.size() << " points."
             << std::endl;
 
-  std::vector<pcl::PointIndices>::iterator i_segment;
+  // std::vector<pcl::PointIndices>::iterator i_segment;
   int cluster_n = 1;
   for (const pcl::PointIndices &cluster : clusters) {
     std::vector<int>::iterator i_point;
@@ -354,7 +372,6 @@ auto estimateCurvature(const pcl::PointCloud<PointXYZLUV>::Ptr &cloud,
   pcl::search::KdTree<PointXYZLUV>::Ptr tree(
       new pcl::search::KdTree<PointXYZLUV>());
 
-  // Use the same KdTree from the normal estimation
   principal_curvatures_estimation.setSearchMethod(tree);
   principal_curvatures_estimation.setKSearch(20);
 
@@ -396,6 +413,8 @@ int main(int argc, char **argv) {
 
   normals_fname.replace(normals_fname.end() - 4, normals_fname.end(), "png");
   planes_fname.replace(planes_fname.end() - 4, planes_fname.end(), "png");
+  curvature_fname.replace(curvature_fname.end() - 4, curvature_fname.end(),
+                          "png");
 
   size_t width;
   size_t height;
@@ -413,11 +432,11 @@ int main(int argc, char **argv) {
   }
 
   // curvature = estimateCurvature(cloud, normals);
-  // saveCurvature(curvature_fname, cloud, curvature, width, height);
+  // saveCurvature(curvature_fname, cloud, normals, width, height);
   // std::tie(n_planes, planes_cloud) = estimatePlanes(cloud, normals);
 
   std::tie(n_planes, planes_cloud) = estimatePlanesGrow(cloud, normals);
   savePlaneMask(planes_fname, planes_cloud, width, height);
-  savePlanePcl(planes_cloud, n_planes, planes_fname + ".ply");
+  // savePlanePcl(planes_cloud, n_planes, planes_fname + ".ply");
   // savePclNormals(planes_cloud, normals, planes_fname + ".ply", n_planes);
 }

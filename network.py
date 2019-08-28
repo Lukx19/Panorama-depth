@@ -311,13 +311,14 @@ rectnet_ops = {
     "smooth_treshold": 0.4,
     "reflection_pad": False,
     "cspn": False,
-    "sigma_c_mult": [0.4, 0.4, 0.2],
+    "sigma_c_mult": [0.3, 0.3, 0.3],
     "sigma_n": [1 / 3, 1 / 3, 1 / 3],
     "guided_merge": True,
     "seg_small_merge": False,
     "direct_merge": False,
     "fusion_merge": False,
     "use_group_norm": True,
+    "skip_connections": False,
 }
 
 
@@ -396,8 +397,13 @@ class RectNet(nn.Module):
         self.decoder1_1 = ConvELUBlock(
             128, 128, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
+        if self.ops["skip_connections"]:
+            skip_in_ch = 129 + 64
+        else:
+            skip_in_ch = 129
+
         self.decoder1_2 = ConvELUBlock(
-            129, 64, 1, reflection_pad=reflection_pad, group_norm=self.use_gn)
+            skip_in_ch, 64, 1, reflection_pad=reflection_pad, group_norm=self.use_gn)
 
         self.prediction1 = nn.Conv2d(64, 1, 3, padding=1)
 
@@ -466,6 +472,7 @@ class RectNet(nn.Module):
                 self.to3d = Depth2Points(self.height, self.width)
                 self.to3d_2x = Depth2Points(self.height // 2, self.width // 2)
                 self.d2pt_2x = Points2Depths(self.height // 2, self.width // 2)
+                self.d2pt = Points2Depths(self.height, self.width)
                 smooth_layers = []
                 for kernel_size, dilation, iters, sigma_c_mult, sigma_n in zip(
                         self.ops["kernel_size"], self.ops["dilation"], self.ops["iterations"],
@@ -493,8 +500,11 @@ class RectNet(nn.Module):
             # self.plane_emb = nn.Conv2d(4, 2, 1)
             # Initialize the network weights
         if self.calc_merge_guidance:
-            self.guidance = nn.Conv2d(64, 1, 3, padding=1)
-            self.guidance2 = nn.Conv2d(2, 1, 3, padding=1)
+            self.m_guid1 = ConvELUBlock(
+                512, 256, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
+            self.m_guid2 = ConvELUBlock(
+                256, 64, 5, padding=2, reflection_pad=reflection_pad, group_norm=self.use_gn)
+            self.m_guid3 = nn.Conv2d(65, 1, 3, padding=1)
 
         if self.fusion_merge:
             self.fusion_d = FilterBlock(in_channels=1, out_channels=1,
@@ -549,11 +559,11 @@ class RectNet(nn.Module):
         input1_3_out = self.input1_3(input0_out_cat)
         # print(input1_3_out.size())
         # First encoding block
-        encoder0_0_out = self.encoder0_0(
-            torch.cat((input1_0_out,
+        input_cat = torch.cat((input1_0_out,
                        input1_1_out,
                        input1_2_out,
-                       input1_3_out), 1))
+                       input1_3_out), 1)
+        encoder0_0_out = self.encoder0_0(input_cat)
         encoder0_1_out = self.encoder0_1(encoder0_0_out)
         encoder0_2_out = self.encoder0_2(encoder0_1_out)
         # print(encoder0_2_out.size())
@@ -613,44 +623,51 @@ class RectNet(nn.Module):
             normals_2x = self.avg_pool_normal(pred_normals).detach()
             seg_2x = self.avg_pool_seg(torch.sigmoid(pred_seg.clone())).detach()
 
-        if self.normal_smoothing:
-            # 3. smooth depth based on normals
-            with torch.no_grad():
-                mask2x = F.interpolate(mask, scale_factor=0.5, mode="nearest")
-                hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
-                                       torch.zeros_like(seg_2x))
-                # hard_seg = torch.ones_like(seg_2x)
-                hard_seg[:, :, 0:10, :] = 0
-                hard_seg[:, :, -10:, :] = 0
-                hard_seg = hard_seg * mask2x
+        # if self.normal_smoothing:
+        #     # 3. smooth depth based on normals
+        #     with torch.no_grad():
+        #         mask2x = F.interpolate(mask, scale_factor=0.5, mode="nearest")
+        #         hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
+        #                                torch.zeros_like(seg_2x))
+        #         # hard_seg = torch.ones_like(seg_2x)
+        #         hard_seg[:, :, 0:10, :] = 0
+        #         hard_seg[:, :, -10:, :] = 0
+        #         hard_seg = hard_seg * mask2x
 
-                points_2x = self.to3d_2x(pred_2x.detach())
-                outputs["pcl2x"].append(points_2x)
-                smooth_pts = points_2x * hard_seg
-                smooth_normals = hard_seg * normals_2x
-                for module in self.smoothing_l:
-                    smooth_pts = module(smooth_pts, smooth_normals, None, hard_seg)
-                    # smooth_pts = smooth_pts * hard_seg
-                    # smooth_normals = hard_seg * smooth_normals
-                    outputs["pcl2x"].append(smooth_pts)
+        #         points_2x = self.to3d_2x(pred_2x.detach())
+        #         outputs["pcl2x"].append(points_2x)
+        #         smooth_pts = points_2x * hard_seg
+        #         smooth_normals = hard_seg * normals_2x
+        #         smooth_pts_pos = smooth_pts.clone()
+        #         for module in self.smoothing_l:
+        #             smooth_pts_pos = module(smooth_pts_pos, smooth_normals, None, hard_seg, 1)
+        #             # smooth_pts = smooth_pts * hard_seg
+        #             # smooth_normals = hard_seg * smooth_normals
+        #             # outputs["pcl2x"].append(smooth_pts)
+        #         outputs["pcl2x"].append(smooth_pts_pos.clone().detach())
+        #         for module in self.smoothing_l:
+        #             smooth_pts = module(smooth_pts, smooth_normals, None, hard_seg, -1)
 
-                # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
-                smooth_depth_2x = self.d2pt_2x(pred_2x.detach(), smooth_pts, normals_2x)
-                # depth_diff = torch.abs(pred_2x - smooth_depth_2x)
-                depth_diff = torch.abs(pred_2x - smooth_depth_2x)
-                smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
-                                              pred_2x, smooth_depth_2x)
-                # smooth_depth_2x = smooth_depth_2x * hard_seg
-                # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
-                upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
-                                                       scale_factor=2, mode="bilinear")
+        #         outputs["pcl2x"].append(smooth_pts.clone().detach())
+        #         smooth_pts = (smooth_pts + smooth_pts_pos / 2)
+        #         # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+        #         smooth_depth_2x = self.d2pt_2x(pred_2x.detach(), smooth_pts, normals_2x)
+        #         # depth_diff = torch.abs(pred_2x - smooth_depth_2x)
+        #         depth_diff = torch.abs(pred_2x - smooth_depth_2x)
+        #         smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
+        #                                       pred_2x, smooth_depth_2x)
+        #         # smooth_depth_2x = smooth_depth_2x * hard_seg
+        #         # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
+        #         upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
+        #                                                scale_factor=2, mode="bilinear")
 
-                hard_seg_1x = torch.where(torch.sigmoid(pred_seg) > 0.5, torch.ones_like(pred_seg),
-                                          torch.zeros_like(pred_seg))
-                upsampled_planar_depth = upsampled_planar_depth * hard_seg_1x
-                # upsampled_pred_2x = upsampled_planar_depth
-                outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
-            # print(upsampled_planar_depth.requires_grad)
+        #         hard_seg_1x = torch.where(torch.sigmoid(pred_seg) > 0.5, torch.ones_like(pred_seg),
+        #                                   torch.zeros_like(pred_seg))
+        #         outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+        #         upsampled_planar_depth = upsampled_planar_depth * hard_seg_1x
+        #         # upsampled_pred_2x = upsampled_planar_depth
+        #         outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+        #     # print(upsampled_planar_depth.requires_grad)
 
         if self.calc_planes and DataType.Planes in inputs:
             planes = inputs[DataType.Planes]
@@ -674,8 +691,11 @@ class RectNet(nn.Module):
             outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
 
         decoder1_1_out = self.decoder1_1(decoder1_0_out)
-        decoder1_2_out = self.decoder1_2(
-            torch.cat((upsampled_pred_2x.detach(), decoder1_1_out), 1))
+        if self.ops["skip_connections"]:
+            cat_depth1x = (upsampled_pred_2x.detach(),input_cat.detach(), decoder1_1_out)
+        else:
+            cat_depth1x = (upsampled_pred_2x.detach(), decoder1_1_out)
+        decoder1_2_out = self.decoder1_2(torch.cat(cat_depth1x, 1))
 
         # Second prediction output (original scale)
         pred_1x = self.prediction1(decoder1_2_out)
@@ -690,6 +710,107 @@ class RectNet(nn.Module):
         outputs["depth1x"] = [opt_depth]
         outputs["depth2x"] = pred_2x
 
+        # if self.normal_smoothing:
+        #     # 3. smooth depth based on normals
+        #     with torch.no_grad():
+        #         mask2x = F.interpolate(mask, scale_factor=0.5, mode="nearest")
+        #         hard_seg = torch.where(seg_2x > 0.5, torch.ones_like(seg_2x),
+        #                                torch.zeros_like(seg_2x))
+        #         # hard_seg = torch.ones_like(seg_2x)
+        #         hard_seg[:, :, 0:20, :] = 0
+        #         hard_seg[:, :, -20:, :] = 0
+        #         hard_seg = hard_seg * mask2x
+        #         depth2x = F.interpolate(opt_depth, scale_factor=0.5, mode="bilinear")
+        #         # depth2x = pred_2x.clone().detach()
+        #         points_2x = self.to3d_2x(depth2x.detach())
+
+        #         outputs["pcl2x"].append(points_2x)
+        #         smooth_pts = points_2x * hard_seg
+        #         smooth_normals = hard_seg * normals_2x
+        #         smooth_pts_pos = smooth_pts.clone()
+        #         for module in self.smoothing_l:
+        #             smooth_pts_pos = module(smooth_pts_pos, smooth_normals, seg_2x, hard_seg, 1)
+        #         smooth_pts = smooth_pts * hard_seg
+        #         # smooth_normals = hard_seg * smooth_normals
+        #         # outputs["pcl2x"].append(smooth_pts)
+        #         outputs["pcl2x"].append(smooth_pts_pos.clone().detach())
+        #         # for module in self.smoothing_l:
+        #         #     smooth_pts = module(smooth_pts, smooth_normals, None, hard_seg, -1)
+
+        #         # outputs["pcl2x"].append(smooth_pts.clone().detach())
+        #         # smooth_pts = (smooth_pts + smooth_pts_pos / 2)
+        #         smooth_pts = smooth_pts_pos
+        #         # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+        #         smooth_depth_2x = self.d2pt_2x(depth2x.detach(), smooth_pts, normals_2x)
+        #         outputs["pcl2x"].append(self.to3d_2x(smooth_depth_2x.clone()))
+        #         # depth_diff = torch.abs(pred_2x - smooth_depth_2x)
+        #         depth_diff = torch.abs(depth2x - smooth_depth_2x)
+        #         # smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
+        #         #                               depth2x, smooth_depth_2x)
+        #         smooth_depth_2x = torch.where(hard_seg > 0,
+        #                                       smooth_depth_2x, depth2x)
+        #         outputs["pcl2x"].append(self.to3d_2x(smooth_depth_2x.clone()))
+        #         # smooth_depth_2x = smooth_depth_2x * hard_seg
+        #         # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
+        #         upsampled_planar_depth = F.interpolate(smooth_depth_2x.detach(),
+        #                                                scale_factor=2, mode="bilinear")
+
+        #         hard_seg_1x = torch.where(torch.sigmoid(pred_seg) > 0.9, torch.ones_like(pred_seg),
+        #                                   torch.zeros_like(pred_seg))
+        #         outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+        #         upsampled_planar_depth = upsampled_planar_depth * hard_seg_1x
+        #         # upsampled_pred_2x = upsampled_planar_depth
+        #         # outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+
+        #     # print(upsampled_planar_depth.requires_grad)
+        if self.normal_smoothing:
+            # 3. smooth depth based on normals
+            with torch.no_grad():
+                seg = torch.sigmoid(pred_seg.clone())
+                normals = pred_normals.clone()
+                hard_seg = torch.where(seg > 0.5, torch.ones_like(seg),
+                                       torch.zeros_like(seg))
+                # hard_seg = torch.ones_like(seg_2x)
+                hard_seg[:, :, 0:20, :] = 0
+                hard_seg[:, :, -20:, :] = 0
+                hard_seg = hard_seg * mask
+                depth = opt_depth
+                # depth2x = pred_2x.clone().detach()
+                points = self.to3d(depth.detach())
+
+                outputs["pcl"].append(points)
+                smooth_pts = points * hard_seg
+                smooth_normals = hard_seg * normals
+                smooth_pts_pos = smooth_pts.clone()
+                for module in self.smoothing_l:
+                    smooth_pts_pos = module(smooth_pts_pos, smooth_normals, None, hard_seg, 1)
+                smooth_pts = smooth_pts * hard_seg
+                # smooth_normals = hard_seg * smooth_normals
+                # outputs["pcl2x"].append(smooth_pts)
+                outputs["pcl"].append(smooth_pts_pos.clone().detach())
+                # for module in self.smoothing_l:
+                #     smooth_pts = module(smooth_pts, smooth_normals, None, hard_seg, -1)
+
+                # outputs["pcl2x"].append(smooth_pts.clone().detach())
+                # smooth_pts = (smooth_pts + smooth_pts_pos / 2)
+                smooth_pts = smooth_pts_pos
+                # smooth_depth = self.d2pt(smooth_depth * hard_seg, smooth_pts, normals * hard_seg)
+                smooth_depth = self.d2pt(depth.detach(), smooth_pts, normals)
+                outputs["pcl"].append(self.to3d(smooth_depth.clone()))
+                # depth_diff = torch.abs(pred_2x - smooth_depth_2x)
+                # depth_diff = torch.abs(depth - smooth_depth)
+                # # smooth_depth_2x = torch.where(depth_diff > self.ops["smooth_treshold"],
+                # #                               depth2x, smooth_depth_2x)
+                # smooth_depth = torch.where(hard_seg > 0.1, smooth_depth, depth)
+                # outputs["pcl"].append(self.to3d(smooth_depth.clone()))
+                # smooth_depth_2x = smooth_depth_2x * hard_seg
+                # smooth_depth_2x = hard_seg * smooth_depth_2x + pred_2x.detach() * (1 - hard_seg)
+                upsampled_planar_depth = smooth_depth
+                # upsampled_planar_depth = upsampled_planar_depth * hard_seg
+                # upsampled_pred_2x = upsampled_planar_depth
+                # outputs["pcl"].append(self.to3d(upsampled_planar_depth.clone().detach()))
+
+            # print(upsampled_planar_depth.requires_grad)
         if self.ops["direct_merge"]:
             depth_diff = torch.abs(opt_depth - upsampled_planar_depth)
             smooth_depth = torch.where(depth_diff > self.ops["smooth_treshold"],
@@ -701,26 +822,32 @@ class RectNet(nn.Module):
             merge_seg = None
             if self.ops["guided_merge"]:
                 outputs["guidance"] = []
-                merge = torch.tanh(self.guidance(decoder1_2_out))
-                outputs["guidance"].append(merge.clone().detach())
-                merge = self.guidance2(torch.cat((merge, pred_seg), dim=1))
-                merge_seg = torch.sigmoid(merge)
+                mguidance = self.m_guid1(F.interpolate(encoder2_2_out, scale_factor=2,
+                                                       mode="bilinear"))
+                mguidance = self.m_guid2(F.interpolate(mguidance, scale_factor=2,
+                                                       mode="bilinear"))
+
+                guidance_cat = torch.cat((mguidance, pred_seg), dim=1)
+                merge_seg = torch.sigmoid(self.m_guid3(guidance_cat))
                 outputs["guidance"].append(merge_seg.clone().detach())
             else:
                 merge_seg = torch.sigmoid(pred_seg)
                 merge_seg = torch.where(merge_seg > 0.5, torch.ones_like(merge_seg),
                                         torch.zeros_like(merge_seg))
 
-            # nonplanar_seg = 1 - planar_seg
+            depth_diff = torch.abs(opt_depth - upsampled_planar_depth)
+            smooth_depth = torch.where(depth_diff > self.ops["smooth_treshold"],
+                                       opt_depth, upsampled_planar_depth)
+                                        # nonplanar_seg = 1 - planar_seg
             # outputs["depth_planar"] = upsampled_planar_depth * merge_seg
-            planar_depth = upsampled_planar_depth * merge_seg
+            smooth_depth = smooth_depth * merge_seg
             # outputs["depth_nonplanar"] = opt_depth * (1 - merge_seg)
             basic_depth = opt_depth * (1 - merge_seg)
 
             # outputs["pcl"].append(self.to3d(outputs["depth_planar"].clone().detach()))
             # outputs["pcl"].append(self.to3d(outputs["depth_nonplanar"].clone().detach()))
 
-            refined_depth = planar_depth + basic_depth
+            refined_depth = smooth_depth + basic_depth
 
             # outputs["pcl"].append(self.to3d(refined_depth.clone().detach()))
             # outputs["depth_ref"] = refined_depth

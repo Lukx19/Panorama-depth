@@ -35,6 +35,6 @@ ADD_EXECUTABLE(convert2pano
 target_link_libraries(convert2pano
                   ${OpenCV_LIBRARIES}
                   ${Boost_LIBRARIES}
-                  Eigen3::Eigen
                   ${TIFF_LIBRARIES}
+                  # Eigen3::Eigen
                   )

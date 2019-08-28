@@ -144,6 +144,27 @@ imagenet_transformer = transforms.Compose([
 ])
 
 
+def repeatPadPoles(tensor, top_missing=40, bottom_missing=40):
+    """Replaces top and bottom missing values on poles by repeating first row with all values
+
+    Parameters
+    ----------
+    tensor : np.array HxWxC
+
+    Returns
+    -------
+    np.array HxWxC
+        Poles are replaced by padding.
+    """
+    assert len(tensor.shape) == 3
+    if np.sum(tensor[0:3, :, :]) != 0:
+        return tensor
+    cropped = tensor[top_missing:-bottom_missing, :, :]
+    padded = np.pad(cropped, pad_width=((top_missing, bottom_missing), (0, 0), (0, 0)), mode="edge")
+    assert tensor.shape == padded.shape
+    return padded
+
+
 class OmniDepthDataset(torch.utils.data.Dataset):
     '''PyTorch dataset module for effiicient loading'''
 
@@ -184,14 +205,17 @@ class OmniDepthDataset(torch.utils.data.Dataset):
 
         # read RGB convert to PIL and apply transformation
         original_rgb = Image.open(osp.join(self.root_path, relative_paths[0])).convert('RGB')
-        rgb = self.transformer_rgb(original_rgb)
+        padded_rgb = repeatPadPoles(np.array(original_rgb))
+
+        rgb = self.transformer_rgb(Image.fromarray(padded_rgb))
 
         # read EXR convert to numpy and convert to PIL. Then apply transformation.
         depth = self.readDepthPano(osp.join(self.root_path, relative_paths[1]))
         depth_mask = ((depth <= self.max_depth) &
                       (depth > 0.)).astype(np.uint8)
+        depth = repeatPadPoles(depth)
         # Threshold depths
-        depth *= depth_mask
+        # depth *= depth_mask
 
         data = {}
         if self.use_sparse_pts:

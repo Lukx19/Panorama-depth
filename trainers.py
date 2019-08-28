@@ -14,7 +14,7 @@ from metrics import (abs_rel_error, delta_inlier_ratio,
                      sq_rel_error, directed_depth_error,
                      depth_boundary_error, planarity_errors,
                      delta_normal_angle_ratio, normal_stats, distance_to_plane,
-                     direct_depth_accuracy)
+                     direct_depth_accuracy, mask_depth)
 
 from util import (saveTensorTiff, toDevice, imageHeatmap,
                   stackVerticaly, heatmapGrid, pytorchDetachedProcess, linePlot)
@@ -277,7 +277,9 @@ def save_saples_for_pcl(data, outputs, results_dir):
 
         saveTensorTiff(name + "_pred_depth", prediction,)
         saveDepthMap(prediction.cpu().numpy().squeeze(), f"{name}_pred_hist.png")
-        savePointCloud(f"{name}_pred_pts.ply", np.array(color_img), prediction, mask=mask)
+        for di, depth in enumerate(outputs.get(DataType.Depth, scale=1)):
+            savePointCloud(f"{name}_pred_pts_{di}.ply", np.array(color_img),
+                           depth[i].cpu(), mask=mask)
 
         sparse_points = d.get(DataType.SparseDepth, scale=1)
         if len(sparse_points) > 0:
@@ -288,10 +290,18 @@ def save_saples_for_pcl(data, outputs, results_dir):
         color_img.save(name + "_color.jpg")
 
         color = np.reshape(color_img, (-1, 3))
+        color_img2x = color_img.resize((256, 127))
+        color2x = np.reshape(color_img2x, (-1, 3))
         for c, pts in enumerate(outputs.get(DataType.Points3d)):
             pts = pts[i].cpu().permute(1, 2, 0).numpy()
             pts = np.reshape(pts, (-1, 3))
             savePcl(pts, color, name + '_points3d_' + str(c) + '.ply',
+                    normals=None)
+
+        for c, pts in enumerate(outputs.get(DataType.Points3d, scale=2)):
+            pts = pts[i].cpu().permute(1, 2, 0).numpy()
+            pts = np.reshape(pts, (-1, 3))
+            savePcl(pts, color2x, name + '_points3d_2x_' + str(c) + '.ply',
                     normals=None)
 
         for c, guidance in enumerate(outputs.get(DataType.Guidance)):
@@ -695,7 +705,8 @@ class MonoTrainer(object):
             f.write(json.dumps(report, indent=2))
 
         self.network = self.network.train()
-        return report, (d1_acc_files, gt_depths, depth_diffs, angle_diffs)
+        return report, (d1_acc_files, gt_depths, depth_diffs, angle_diffs,
+                        self.meters["Acc_Depth"]["Scale"].elems)
 
     def train(self, checkpoint_path=None, weights_only=False):
 
@@ -709,7 +720,7 @@ class MonoTrainer(object):
             # self.initialize_visualizations()
             # make sure that validation is correct without bugs
 
-        self.validate()
+        # self.validate()
         # self.visualize_metrics(save_to_disk=False)
         print('Starting training')
         # Train for specified number of epochs
@@ -744,14 +755,24 @@ class MonoTrainer(object):
         '''
         Computes metrics used to evaluate the model
         '''
-        depth_pred = output.get(DataType.Depth, scale=1)[0]
-
-        gt_depth = data.get(DataType.Depth, scale=1)[0]
         depth_mask = data.get(DataType.Depth, scale=1)[0]
+        depth_pred = output.get(DataType.Depth, scale=1)[0]
+        # depth_pred = depth_pred * depth_mask
+        gt_depth = data.get(DataType.Depth, scale=1)[0]
+        # gt_depth = gt_depth * depth_mask
         sparse_pts = data.get(DataType.SparseDepth, scale=1)
         gt_normals = data.get(DataType.Normals, scale=1)
         pred_normals = output.get(DataType.Normals, scale=1)
         gt_planes = data.get(DataType.Planes)
+
+        depth_pred[torch.isnan(depth_pred)] = 0
+        gt_depth[torch.isnan(gt_depth)] = 0
+        pred_mask = mask_depth(depth_pred, 8.0)
+        gt_mask = mask_depth(gt_depth, 8.0)
+        depth_mask = pred_mask & gt_mask
+        if torch.sum(depth_mask) == 0:
+            print("nulaaa")
+
         if len(sparse_pts) > 0:
             pts_present_mask = torch.sign(sparse_pts[0])
             depth_mask = depth_mask - depth_mask * pts_present_mask
@@ -774,10 +795,10 @@ class MonoTrainer(object):
         sq_rel = sq_rel_error(depth_pred, gt_depth, depth_mask)
         rms_sq_lin = lin_rms_sq_error(depth_pred, gt_depth, depth_mask)
         rms_sq_log = log_rms_sq_error(depth_pred, gt_depth, depth_mask)
-        d0 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=1, base=1.1)
-        d1 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=1)
-        d2 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=2)
-        d3 = delta_inlier_ratio(depth_pred / 8, gt_depth / 8, depth_mask, degree=3)
+        d0 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=1, base=1.1)
+        d1 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=1)
+        d2 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=2)
+        d3 = delta_inlier_ratio(depth_pred, gt_depth, depth_mask, degree=3)
         dd2 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.2)
         dd4 = direct_depth_accuracy(depth_pred, gt_depth, depth_mask, thr=0.4)
         depth_diff = (gt_depth - depth_pred)[normal_mask > 0]
@@ -813,7 +834,7 @@ class MonoTrainer(object):
         # pe_flat, orient_err = planarity_errors(depth_pred, gt_normals, planes, mask)
         if len(sparse_pts) > 0:
             sparse_abs_rel = abs_rel_error(depth_pred, gt_depth, pts_present_mask)
-
+        N = 1
         self.meters["Basic"]["Abs. Rel. Error"].update(abs_rel, N)
         self.meters["Basic"]["Sq. Rel. Error"].update(sq_rel, N)
         self.meters["Basic"]["Linear RMS Error"].update(rms_sq_lin, N)
